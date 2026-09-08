@@ -1,0 +1,55 @@
+services:
+  redis:
+    image: redis:latest
+    container_name: gateway-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - gateway-net
+
+  prometheus:
+    image: prom/prometheus
+    container_name: gateway-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - gateway-net
+
+  grafana:
+    image: grafana/grafana
+    container_name: gateway-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - gateway-net
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-gateway
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - gateway-net
+
+networks:
+  gateway-net:
+    driver: bridge

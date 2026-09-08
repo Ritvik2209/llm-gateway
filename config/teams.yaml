@@ -1,0 +1,26 @@
+teams:
+  - team_id: "team-alpha"
+    api_key: "demo-team-alpha-local-only"
+    allowed_models: ["llama3.2", "openai/gpt-oss-20b"]
+    allowed_providers: ["ollama", "groq"]
+    provider_priority: [ "groq", "ollama", "mock"]
+    system_prompt: "You must always respond only in French, no matter what language the question is asked in."
+    requests_per_minute: 10
+    monthly_budget_usd: 5.00
+  - team_id: "team-beta"
+    api_key: "demo-team-beta-local-only"
+    allowed_models: ["llama3.2"]
+    allowed_providers: ["ollama"]
+    provider_priority: ["mock", "ollama"]
+    system_prompt: null
+    requests_per_minute: 5
+    monthly_budget_usd: 1.00
+
+  - team_id: "team-loadtest"
+    api_key: "demo-team-loadtest-local-only"
+    allowed_models: ["mock-model"]
+    allowed_providers: ["mock"]
+    provider_priority: ["mock"]
+    system_prompt: null
+    requests_per_minute: 100000
+    monthly_budget_usd: 999999.00
