@@ -254,3 +254,36 @@ not just of request volume.
 Recorded around the provider call alone (`app/main.py:220-239`), excluding auth, rate limiting,
 budget checks, serialization, and queueing. It is not an end-to-end latency metric and should not
 be compared against client-side measurements. See the Prometheus cross-check section above.
+
+### Budget enforcement is pre-charge, not atomic
+
+`check_budget` verifies that recorded spend is under the cap *before* the current request's cost is
+calculated and added. The request that crosses the cap therefore still succeeds with HTTP 200 and is
+charged in full; only the *next* request receives HTTP 402. A team can consequently overspend its
+hard cap by up to one request's cost.
+
+Discovered via integration testing (`tests/test_integration.py`). With a $0.001 monthly cap and a
+priced mock model, the observed sequence was: request 3 served with an `X-Budget-Warning` header,
+request 4 rejected with 402, and final recorded spend of **$0.0012 against a $0.001 cap** — a 20%
+overshoot in that configuration. The overshoot is bounded by the cost of a single request, so it
+matters most for teams with small caps or expensive per-request models.
+
+A stricter implementation would test whether the request's projected cost *would* exceed the cap
+before allowing it through, rather than checking only the pre-existing balance. Doing that reliably
+also requires reserving the projected spend atomically, since two concurrent requests can each
+observe an under-cap balance and both proceed.
+
+### The mock provider's zero-cost pricing makes budget enforcement untestable without monkeypatching
+
+`app/config.py` prices `mock-model` at $0.00 per 1k input and $0.00 per 1k output tokens, so traffic
+routed through the mock provider never accumulates spend regardless of volume. This is correct for a
+fake provider — there is no real cost to track — but it means no amount of mock traffic will ever
+approach, warn on, or trip a budget cap.
+
+Confirmed via integration testing (`tests/test_integration.py`): requests sent against a team with a
+$0.001 cap left recorded spend at exactly `0`, with no warning header and no 402 at any volume. As a
+result, `tests/test_integration.py` has to assign `mock-model` a nonzero price via `monkeypatch`
+before budget behavior can be exercised at all, following the pattern already used in
+`tests/test_budget.py`. Budget-cap coverage therefore rests on synthetic pricing rather than the
+real configured pricing table, and a regression in the shipped pricing values would not be caught by
+these tests.
