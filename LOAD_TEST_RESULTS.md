@@ -287,3 +287,29 @@ before budget behavior can be exercised at all, following the pattern already us
 `tests/test_budget.py`. Budget-cap coverage therefore rests on synthetic pricing rather than the
 real configured pricing table, and a regression in the shipped pricing values would not be caught by
 these tests.
+
+### Health monitoring is decoupled from provider routing
+
+The `HealthMonitor` tracks per-provider status, latency and error rate, and exposes it through
+`/admin/health`, but none of it influences which provider serves a request. Routing is decided
+solely by the circuit breaker.
+
+`get_provider_candidates` (`app/main.py:168-186`) accepts a `HealthMonitor` as its second parameter
+and never reads it. The function body references `provider_priority`, `providers` and
+`circuit_breaker` only; the sole gate on a candidate is `circuit_breaker.can_attempt(provider_name)`
+at `app/main.py:184-186`. A provider that background probes have already marked `degraded` or `down`
+is therefore still attempted at full priority, and is only skipped once it has accumulated enough
+real request failures to open its own circuit.
+
+This is pinned as intended behavior by
+`tests/test_fallback.py::test_health_status_does_not_affect_provider_selection`, which sets `ollama`
+to `down` and `mock` to `healthy` and asserts that `ollama` is still selected. It is recorded here
+because the decoupling is easy to misread: `/admin/health` reporting a provider as `down` implies
+traffic is being steered away from it, and it is not.
+
+The practical cost is a slower reaction to a provider that is already known to be failing — health
+data arrives ahead of the circuit breaker but is discarded, so every recovery path has to be
+rediscovered through failed customer requests. Consuming health status as an additional ordering or
+filtering signal would close that gap; the observed behavior of `/admin/health` was also what made
+the stale-`degraded` reading during the real-provider sanity check above harmless rather than
+misleading.
