@@ -1,9 +1,12 @@
+# The mock provider must only appear in a test team's chain. It returns a fixed
+# "mock response" with HTTP 200, so a real team falling back to it would receive
+# fabricated content indistinguishable from a successful completion.
 teams:
   - team_id: "team-alpha"
     api_key: "demo-team-alpha-local-only"
     allowed_models: ["llama3.2", "openai/gpt-oss-20b"]
     allowed_providers: ["ollama", "groq"]
-    provider_priority: [ "groq", "ollama", "mock"]
+    provider_priority: ["groq", "ollama"]
     system_prompt: "You must always respond only in French, no matter what language the question is asked in."
     requests_per_minute: 10
     monthly_budget_usd: 5.00
@@ -11,7 +14,7 @@ teams:
     api_key: "demo-team-beta-local-only"
     allowed_models: ["llama3.2"]
     allowed_providers: ["ollama"]
-    provider_priority: ["mock", "ollama"]
+    provider_priority: ["ollama"]
     system_prompt: null
     requests_per_minute: 5
     monthly_budget_usd: 1.00

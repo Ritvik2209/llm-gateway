@@ -1,1 +1,0 @@
-"""Anthropic provider integration placeholder."""

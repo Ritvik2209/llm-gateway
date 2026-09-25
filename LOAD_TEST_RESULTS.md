@@ -21,9 +21,9 @@ Supporting figures from the same `hey` output files:
 
 | Concurrency | Average | Fastest | Slowest | Source file |
 |---|---|---|---|---|
-| 10  | 0.0223 s | 0.0110 s | 0.0394 s | `loadtest_nolatency_c10.txt` |
-| 50  | 0.1096 s | 0.0143 s | 0.2641 s | `loadtest_nolatency_c50.txt` |
-| 100 | 0.2168 s | 0.1441 s | 0.8582 s | `loadtest_nolatency_c100.txt` |
+| 10  | 0.0223 s | 0.0110 s | 0.0394 s | `docs/loadtest/loadtest_nolatency_c10.txt` |
+| 50  | 0.1096 s | 0.0143 s | 0.2641 s | `docs/loadtest/loadtest_nolatency_c50.txt` |
+| 100 | 0.2168 s | 0.1441 s | 0.8582 s | `docs/loadtest/loadtest_nolatency_c100.txt` |
 
 ### The gateway saturates at roughly 450 req/s
 
@@ -62,9 +62,9 @@ measurement of gateway overhead; the 100 ms floor dominates them.
 
 | Concurrency | Average | Fastest | Slowest | Source file |
 |---|---|---|---|---|
-| 10  | 0.1145 s | 0.1031 s | 0.1451 s | `loadtest_results_c10.txt` |
-| 50  | 0.1590 s | 0.1037 s | 0.2360 s | `loadtest_results_c50.txt` |
-| 100 | 0.1976 s | 0.1068 s | 0.3435 s | `loadtest_results_c100.txt` |
+| 10  | 0.1145 s | 0.1031 s | 0.1451 s | `docs/loadtest/loadtest_results_c10.txt` |
+| 50  | 0.1590 s | 0.1037 s | 0.2360 s | `docs/loadtest/loadtest_results_c50.txt` |
+| 100 | 0.1976 s | 0.1068 s | 0.3435 s | `docs/loadtest/loadtest_results_c100.txt` |
 
 Comparing the two sets is instructive. At concurrency 10 and 50 the simulated delay was the binding
 constraint, so removing it multiplied throughput by 5.2x and 1.5x respectively. At concurrency 100
@@ -127,7 +127,7 @@ provider at concurrency 5, capped to stay well inside Groq's free-tier allowance
 | Ollama | team-beta  | `llama3.2` (local)   | 20 (c=5) | 1.5257 | 2.8800 s | 4.0000 s | 2.9467 s | 1.1799 s | 4.0000 s | 0 non-200 |
 
 `hey` does not compute a P99 at n=20 — it emitted `0%% in 0.0000 secs` for that row in both runs — so
-no P99 is reported here. Source files: `realworld_groq_results.txt`, `realworld_ollama_results.txt`.
+no P99 is reported here. Source files: `docs/loadtest/realworld_groq_results.txt`, `docs/loadtest/realworld_ollama_results.txt`.
 The Ollama run used `-t 60` to accommodate CPU-bound local inference; nothing timed out, and the
 provider's own HTTP client allows a 60 s read (`app/providers/ollama_provider.py:38-43`), so the
 ~4 s maximum is genuine clustering rather than a cap.
@@ -195,7 +195,11 @@ reach Ollama rather than the mock provider. All three values were reverted after
 
 ## Known Limitations
 
-### `allowed_providers` is never enforced in routing
+### `allowed_providers` is never enforced in routing — RESOLVED
+
+> **Resolved.** Enforcement was added in `get_allowed_provider_priority`: the priority chain is
+> now intersected with the allowlist at the single point every routing decision reads, and the
+> check is fail-closed. The finding is kept below as the original analysis.
 
 A team's `allowed_providers` list is loaded from config but never consulted when choosing a
 provider. Routing is decided entirely by `provider_priority`.
@@ -228,7 +232,12 @@ A fix would intersect the two lists before building candidates, e.g. filtering o
 `provider_name in providers and provider_name in team_config.get("allowed_providers", [])`, and
 rejecting the request when the intersection is empty rather than silently falling through.
 
-### Fallback to the mock provider returns fabricated content as HTTP 200
+### Fallback to the mock provider returns fabricated content as HTTP 200 — MITIGATED
+
+> **Mitigated, not eliminated.** `mock` was removed from every real team's priority chain, and
+> allowlist enforcement now blocks it for any team that does not list it. The underlying
+> behaviour is unchanged: a team that *does* allow `mock` can still receive fabricated content
+> as a 200, so the provider remains test-only by convention rather than by construction.
 
 When every real provider in a team's priority list fails, the chain continues into `mock` if it is
 listed, and the client receives HTTP 200 containing the literal string `"mock response"` with no

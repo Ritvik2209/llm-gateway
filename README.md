@@ -81,9 +81,9 @@ Thresholds are the defaults in `app/circuit_breaker.py`: `failure_threshold=4`, 
 |---|---|---|
 | `POST` | `/v1/chat` | Unified chat completion |
 | `GET` | `/health` | Liveness check |
-| `GET` | `/admin/health` | Per-provider status, circuit state, latencies, error rate |
+| `GET` | `/admin/health` | Per-provider status, circuit state, latencies, error rate — **admin key required** |
 | `GET` | `/metrics` | Prometheus exposition |
-| `POST` | `/admin/mock/toggle-failure` | Force the mock provider to fail, for testing failover |
+| `POST` | `/admin/mock/toggle-failure` | Force the mock provider to fail, for testing failover — **admin key required** |
 
 ## Quick Start
 
@@ -146,7 +146,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-**40 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**47 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
 Six of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget warning and cap enforcement, and rate limiting.
 
@@ -195,15 +195,12 @@ Exported metrics: `gateway_requests_total`, `gateway_request_duration_seconds`, 
 
 These were found by testing the running system, and are documented rather than papered over. Full detail and reproduction for each is in **[LOAD_TEST_RESULTS.md](LOAD_TEST_RESULTS.md#known-limitations)**.
 
-- **`allowed_providers` is never enforced in routing.** Provider selection filters `provider_priority` against the globally registered providers only (`app/main.py:179-181`), so a team can be served by a provider absent from its allowlist. The field reads as a security control but does not act as one.
 - **Budget enforcement is pre-charge, not atomic.** The cap is checked against spend accrued *before* the current request, so the request that crosses the cap still succeeds and only the next one gets a 402 — a team can overspend by up to one request. Concurrent requests can also each observe an under-cap balance and both proceed.
 - **Health monitoring is decoupled from routing.** `get_provider_candidates` accepts a `HealthMonitor` but never reads it; only circuit-breaker state affects selection. A provider marked `down` by health checks is still attempted until its circuit opens on real failures.
-- **Falling back to the mock provider returns fabricated content as HTTP 200.** If every real provider in a chain fails and `mock` is listed, the client receives `"mock response"` with a success status and no indication the answer is synthetic. Observed live during a real-provider test.
+- **The mock provider would return fabricated content as HTTP 200 if a team allowed it.** It is excluded from every real team's chain and blocked by allowlist enforcement, so this is closed by configuration rather than by construction — a team that explicitly allows `mock` can still receive `"mock response"` with a success status.
 - **The mock provider is priced at $0.00**, so mock traffic never accumulates spend and budget caps cannot be exercised against it without overriding the pricing table in tests.
 - **Health-monitor probes consume real provider quota.** Background probes issue real chat completions, so provider spend and rate-limit consumption are a function of uptime, not just request volume.
 - **`gateway_request_duration_seconds` measures the provider call only**, excluding auth, rate limiting, budget checks, and queueing. It is not end-to-end latency and should not be compared against client-side measurements.
-
-Also worth noting: `app/providers/anthropic_provider.py` and `app/providers/openai_provider.py` exist but are empty placeholders. Only Ollama, Groq, and Mock are implemented.
 
 ## Tech Stack
 
