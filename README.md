@@ -1,5 +1,7 @@
 # LLM Gateway
 
+[![CI](https://github.com/Ritvik2209/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Ritvik2209/llm-gateway/actions/workflows/ci.yml)
+
 A self-hosted API gateway that sits between internal teams and multiple LLM providers, adding routing, failover, per-team rate limiting, budget enforcement, and observability.
 
 This is a portfolio project, built to demonstrate the production-style patterns that sit around an LLM API rather than the model call itself: multi-provider fallback, circuit breaking, cost control, and metrics. Every number in this README comes from an actual measurement or a constant in the source, and the [Known Limitations](#known-limitations) section documents the gaps that testing exposed rather than hiding them. The load-test results were produced against the running stack, and the resilience behavior is covered by an integration suite that drives the full HTTP path. It is intended to be read as an honest engineering artifact, including the parts that are unfinished.
