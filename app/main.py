@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from typing import Any, AsyncGenerator
 
@@ -10,7 +11,13 @@ from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.auth import verify_admin_key, verify_api_key
-from app.budget import add_spend, calculate_cost, check_budget
+from app.budget import (
+    calculate_cost,
+    estimate_max_cost,
+    reconcile_spend,
+    release_reservation,
+    reserve_budget,
+)
 from app.circuit_breaker import CircuitBreaker
 from app.config import load_teams_config
 from app.health import HealthMonitor
@@ -29,6 +36,9 @@ from app.providers.mock_provider import MockProvider
 from app.providers.ollama_provider import OllamaProvider
 from app.rate_limiter import check_rate_limit, get_redis_client
 from app.retry import call_with_retry
+
+
+logger = logging.getLogger(__name__)
 
 ollama_provider = OllamaProvider()
 mock_provider = MockProvider(should_fail=False)
@@ -309,8 +319,28 @@ async def chat(
                 headers={"Retry-After": "60"},
             )
 
-        budget_allowed, _current_spend, is_budget_warning = await check_budget(
+        try:
+            budget_reservation = estimate_max_cost(
+                model=request.model,
+                messages=request.messages,
+                max_output_tokens=request.max_tokens,
+            )
+        except ValueError as exc:
+            # An unpriced model cannot be metered, so serving it would mean abandoning
+            # budget enforcement for that request. Fail closed, and say why: this
+            # previously surfaced as a bare 500 from deep inside cost accounting.
+            logger.error("Cannot price model %s: %s", request.model, exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Budget cannot be enforced: no pricing configured for model "
+                    f'"{request.model}".'
+                ),
+            ) from exc
+
+        budget_allowed, _spend_before, is_budget_warning = await reserve_budget(
             team_id=team_id,
+            reservation_usd=budget_reservation,
             monthly_budget_usd=team_config.get("monthly_budget_usd", 0.0),
             redis_client=app.state.redis_client,
         )
@@ -322,7 +352,10 @@ async def chat(
             ).inc()
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="Monthly budget cap has been reached for this team.",
+                detail=(
+                    "Monthly budget cap reached: this request's projected cost "
+                    "would exceed the team's remaining budget."
+                ),
             )
 
         if is_budget_warning:
@@ -389,6 +422,11 @@ async def chat(
                         provider=selected_provider_name,
                         status="error",
                     ).inc()
+                    await release_reservation(
+                        team_id=team_id,
+                        reserved_usd=budget_reservation,
+                        redis_client=app.state.redis_client,
+                    )
                     raise
 
                 REQUEST_DURATION_SECONDS.labels(
@@ -416,7 +454,12 @@ async def chat(
                     input_tokens=stream_usage["input_tokens"],
                     output_tokens=stream_usage["output_tokens"],
                 )
-                await add_spend(team_id, cost, app.state.redis_client)
+                await reconcile_spend(
+                    team_id=team_id,
+                    reserved_usd=budget_reservation,
+                    actual_usd=cost,
+                    redis_client=app.state.redis_client,
+                )
                 REQUESTS_TOTAL.labels(
                     team_id=team_id,
                     model=request.model,
@@ -433,13 +476,23 @@ async def chat(
                 headers=headers,
             )
 
-        provider_response = await call_chat_with_fallback(
-            team_config,
-            request,
-            health_monitor,
-            app.state.circuit_breaker,
-            runtime_providers,
-        )
+        try:
+            provider_response = await call_chat_with_fallback(
+                team_config,
+                request,
+                health_monitor,
+                app.state.circuit_breaker,
+                runtime_providers,
+            )
+        except Exception:
+            # No provider served the request, so it incurred no provider cost. Holding
+            # the reservation would leak budget on every failed request.
+            await release_reservation(
+                team_id=team_id,
+                reserved_usd=budget_reservation,
+                redis_client=app.state.redis_client,
+            )
+            raise
         request_provider = provider_response.provider
         TOKENS_TOTAL.labels(
             team_id=team_id,
@@ -451,12 +504,21 @@ async def chat(
             provider=provider_response.provider,
             token_type="output",
         ).inc(provider_response.output_tokens)
+        # Priced against the requested model, not the provider's echoed model name, so
+        # reservation and reconciliation always use the same pricing entry. The streaming
+        # path already did this; the two disagreeing meant a request could be reserved at
+        # one price and charged at another.
         cost = calculate_cost(
-            model=provider_response.model,
+            model=request.model,
             input_tokens=provider_response.input_tokens,
             output_tokens=provider_response.output_tokens,
         )
-        await add_spend(team_id, cost, app.state.redis_client)
+        await reconcile_spend(
+            team_id=team_id,
+            reserved_usd=budget_reservation,
+            actual_usd=cost,
+            redis_client=app.state.redis_client,
+        )
         REQUESTS_TOTAL.labels(
             team_id=team_id,
             model=request.model,

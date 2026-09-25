@@ -11,7 +11,7 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 - **Multi-provider routing** across three implemented providers: **Ollama** (local models), **Groq** (hosted inference), and a built-in **Mock** provider for deterministic testing.
 - **Automatic failover** — when a provider fails, the request transparently retries down the team's priority chain, and a per-provider circuit breaker stops hammering a provider that is already failing.
 - **Redis-backed rate limiting** using a sliding 60-second window implemented as an atomic Lua script.
-- **Redis-backed budget enforcement** with a monthly per-team spend cap, an 80% warning header, and hard rejection at the cap.
+- **Redis-backed budget enforcement** with a monthly per-team spend cap. Each request's worst-case cost is reserved atomically *before* the provider call and reconciled against actual usage afterwards, so the cap is a hard limit even under concurrency. An 80% crossing sets a warning header.
 - **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, and monthly budget.
 - **Prometheus + Grafana observability**, with the datasource and a five-panel dashboard provisioned as code so the stack comes up already wired.
 - **One-command setup** via Docker Compose (gateway, Redis, Prometheus, Grafana).
@@ -34,13 +34,13 @@ Model authorization     model ∈ team.allowed_models           403 if not allow
 Rate limiting           Redis sliding window, 60s             429 + Retry-After
   │
   ▼
-Budget check            month-to-date spend vs cap            402 at cap
+Budget reservation      reserve worst-case cost atomically    402 if it will not fit
   │                     ≥80% → X-Budget-Warning header
   ▼
 Provider selection      priority chain + circuit breaker      503 if none available
   │                     retry w/ backoff, fall through on failure
   ▼
-Response + accounting   record spend, tokens, latency, metrics
+Response + accounting   reconcile reservation vs actual usage
 ```
 
 Provider selection walks the team's `provider_priority` list in order, skipping any provider whose circuit is open, and falling through to the next on failure:
@@ -148,9 +148,9 @@ pip install -r requirements.txt
 pytest
 ```
 
-**47 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**56 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
-Six of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget warning and cap enforcement, and rate limiting.
+Nine of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
 ## Load Test Results
 
@@ -197,7 +197,7 @@ Exported metrics: `gateway_requests_total`, `gateway_request_duration_seconds`, 
 
 These were found by testing the running system, and are documented rather than papered over. Full detail and reproduction for each is in **[LOAD_TEST_RESULTS.md](LOAD_TEST_RESULTS.md#known-limitations)**.
 
-- **Budget enforcement is pre-charge, not atomic.** The cap is checked against spend accrued *before* the current request, so the request that crosses the cap still succeeds and only the next one gets a 402 — a team can overspend by up to one request. Concurrent requests can also each observe an under-cap balance and both proceed.
+- **Budget reservations are conservative.** Output cost is reserved at the caller's `max_tokens` ceiling, which is what makes the cap a hard limit, but it means a team close to its cap can be refused a request whose actual cost would have fitted. Spend is also held as a float; integer micro-dollars would be the correct representation for money.
 - **Health monitoring is decoupled from routing.** `get_provider_candidates` accepts a `HealthMonitor` but never reads it; only circuit-breaker state affects selection. A provider marked `down` by health checks is still attempted until its circuit opens on real failures.
 - **The mock provider would return fabricated content as HTTP 200 if a team allowed it.** It is excluded from every real team's chain and blocked by allowlist enforcement, so this is closed by configuration rather than by construction — a team that explicitly allows `mock` can still receive `"mock response"` with a success status.
 - **The mock provider is priced at $0.00**, so mock traffic never accumulates spend and budget caps cannot be exercised against it without overriding the pricing table in tests.

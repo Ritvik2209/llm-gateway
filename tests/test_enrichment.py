@@ -52,6 +52,7 @@ def create_test_client(monkeypatch, provider):
         return True, 9
 
     async def allow_budget(*args, **kwargs):
+        # (allowed, spend_before, is_warning)
         return True, 0.0, False
 
     async def record_spend(*args, **kwargs):
@@ -60,8 +61,8 @@ def create_test_client(monkeypatch, provider):
     monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS_CONFIG)
     monkeypatch.setattr(main_module, "ollama_provider", provider)
     monkeypatch.setattr(main_module, "check_rate_limit", allow_request)
-    monkeypatch.setattr(main_module, "check_budget", allow_budget)
-    monkeypatch.setattr(main_module, "add_spend", record_spend)
+    monkeypatch.setattr(main_module, "reserve_budget", allow_budget)
+    monkeypatch.setattr(main_module, "reconcile_spend", record_spend)
     return TestClient(main_module.app)
 
 

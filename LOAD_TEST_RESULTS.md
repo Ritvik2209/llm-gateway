@@ -264,7 +264,16 @@ Recorded around the provider call alone (`app/main.py:220-239`), excluding auth,
 budget checks, serialization, and queueing. It is not an end-to-end latency metric and should not
 be compared against client-side measurements. See the Prometheus cross-check section above.
 
-### Budget enforcement is pre-charge, not atomic
+### Budget enforcement is pre-charge, not atomic — RESOLVED
+
+> **Resolved.** Enforcement moved from a read-then-check *after* the fact to an atomic
+> reservation *before* the provider call. Each request's worst-case cost is added with
+> `INCRBYFLOAT`, which is atomic and returns the post-increment total, so concurrent requests
+> cannot both claim the same headroom; a request that would breach the cap compensates by
+> decrementing exactly what it added. After the call the reservation is reconciled against the
+> provider's reported usage, and a failed request releases it in full. Recorded spend can no
+> longer exceed the cap, which is asserted directly by an integration test. The original
+> analysis is kept below.
 
 `check_budget` verifies that recorded spend is under the cap *before* the current request's cost is
 calculated and added. The request that crosses the cap therefore still succeeds with HTTP 200 and is

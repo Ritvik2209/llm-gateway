@@ -1,7 +1,7 @@
 """End-to-end integration tests driving the full FastAPI request path.
 
 These differ from the unit tests in this directory: rather than calling helpers such as
-`select_provider` or `check_budget` directly, every test here issues a real HTTP request through
+`select_provider` or `reserve_budget` directly, every test here issues a real HTTP request through
 `TestClient` and asserts on what the whole stack does - auth, model authorization, rate limiting,
 budget checks, provider routing/fallback, circuit breaking, spend accounting and metrics.
 
@@ -40,6 +40,11 @@ CHAT_REQUEST = {
     "messages": [{"role": "user", "content": "hello"}],
 }
 
+# Budget reservations price output at the caller's max_tokens ceiling, and the schema
+# default is 1024. Against a deliberately tiny cap that ceiling alone would exceed the
+# budget, so the budget tests state a small ceiling explicitly.
+BUDGET_CHAT_REQUEST = {**CHAT_REQUEST, "max_tokens": 10}
+
 # Each scenario gets its own api key and team_id so Redis budget/rate-limit keys never collide,
 # letting these tests run in any order, repeatedly, alongside the existing unit tests.
 TEAMS_CONFIG = {
@@ -54,11 +59,8 @@ TEAMS_CONFIG = {
     "integration-fallback-key": {
         "team_id": "integration-fallback",
         "allowed_models": ["mock-model"],
-        # NOTE: `allowed_providers` is listed here for realism but is never consulted when routing.
-        # `get_provider_candidates` (app/main.py:179-181) filters `provider_priority` against the
-        # globally registered providers dict only. See the "allowed_providers is never enforced in
-        # routing" known limitation in LOAD_TEST_RESULTS.md. Routing below is driven purely by
-        # `provider_priority`.
+        # `allowed_providers` is the authorization boundary and is enforced in routing, so it
+        # must list every provider the priority chain below is allowed to reach.
         "allowed_providers": ["mock", "ollama"],
         "provider_priority": ["mock", "ollama"],
         "requests_per_minute": 1000,
@@ -78,7 +80,7 @@ TEAMS_CONFIG = {
         "allowed_providers": ["mock"],
         "provider_priority": ["mock"],
         "requests_per_minute": 1000,
-        "monthly_budget_usd": 0.001,
+        "monthly_budget_usd": 0.002,
     },
     "integration-ratelimit-key": {
         "team_id": "integration-ratelimit",
@@ -376,45 +378,83 @@ def test_circuit_breaker_opens_then_half_opens_then_closes(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_budget_warning_then_hard_stop_at_cap(monkeypatch):
-    """Spend crossing 80% sets X-Budget-Warning; reaching 100% returns 402.
+def test_budget_is_never_exceeded_and_warns_before_the_cap(monkeypatch):
+    """Spend must never pass the cap, and a warning must precede the rejection.
 
-    NOTE: `check_budget` compares spend accrued *before* the current request (app/main.py:299-317
-    calls it ahead of the provider call), so the request that pushes a team over its cap still
-    succeeds and only the following one is rejected. A team can therefore overspend its cap by one
-    request. Asserted below as observed behavior, and flagged because a "sensible" reading of a hard
-    cap would refuse the request that crosses it.
+    The cap is enforced by reserving each request's worst-case cost *before* calling the
+    provider, so a request is only admitted if it already fits. Rather than pinning an
+    exact request count, this asserts the invariant the previous pre-charge
+    implementation could not hold: recorded spend stays at or below the cap.
     """
     monkeypatch.setattr(budget_module, "MODEL_PRICING", PRICED_MOCK_MODEL)
     client, redis_client, _circuit_breaker = create_test_client(monkeypatch)
 
     headers = {"Authorization": "Bearer integration-budget-key"}
-    budget = TEAMS_CONFIG["integration-budget-key"]["monthly_budget_usd"]
+    cap = TEAMS_CONFIG["integration-budget-key"]["monthly_budget_usd"]
 
-    # Spend before request: 0.0 -> below the 0.0008 warning threshold.
-    first = client.post("/v1/chat", headers=headers, json=CHAT_REQUEST)
-    assert first.status_code == 200
-    assert "X-Budget-Warning" not in first.headers
+    statuses: list[int] = []
+    warned_before_rejection = False
 
-    # Spend before request: 0.0004 -> still below the warning threshold.
-    second = client.post("/v1/chat", headers=headers, json=CHAT_REQUEST)
-    assert second.status_code == 200
-    assert "X-Budget-Warning" not in second.headers
+    # Bounded so a bug that never rejects fails the test instead of looping forever.
+    for _ in range(20):
+        response = client.post("/v1/chat", headers=headers, json=BUDGET_CHAT_REQUEST)
+        statuses.append(response.status_code)
+        if response.status_code == 402:
+            break
+        assert response.status_code == 200
+        if response.headers.get("X-Budget-Warning") == "true":
+            warned_before_rejection = True
 
-    # Spend before request: 0.0008 == 80% of 0.001 -> warns, and is still served.
-    third = client.post("/v1/chat", headers=headers, json=CHAT_REQUEST)
-    assert third.status_code == 200
-    assert third.headers.get("X-Budget-Warning") == "true"
+    assert 200 in statuses, "no request was ever served"
+    assert statuses[-1] == 402, "the cap was never enforced"
+    assert warned_before_rejection, "no X-Budget-Warning was raised before the cap"
 
-    # Spend before request: 0.0012 >= the 0.001 cap -> rejected.
-    fourth = client.post("/v1/chat", headers=headers, json=CHAT_REQUEST)
-    assert fourth.status_code == 402
-    assert "budget" in fourth.json()["detail"].lower()
+    # The invariant. Previously this overshot: a $0.001 cap reached $0.0012 of spend.
+    spend_at_cap = read_spend(redis_client, "integration-budget")
+    assert spend_at_cap <= cap
 
-    # The cap was overshot by exactly one request's worth of spend, per the NOTE above.
-    final_spend = read_spend(redis_client, "integration-budget")
-    assert final_spend == pytest.approx(3 * PRICED_COST_PER_REQUEST)
-    assert final_spend > budget
+    # The rejected request's reservation was compensated, so a further rejection cannot
+    # inflate recorded spend either.
+    again = client.post("/v1/chat", headers=headers, json=BUDGET_CHAT_REQUEST)
+    assert again.status_code == 402
+    assert read_spend(redis_client, "integration-budget") == pytest.approx(spend_at_cap)
+
+
+def test_failed_request_releases_its_budget_reservation(monkeypatch):
+    """A request that reaches no provider must not consume budget."""
+    monkeypatch.setattr(budget_module, "MODEL_PRICING", PRICED_MOCK_MODEL)
+    client, redis_client, _circuit_breaker = create_test_client(monkeypatch)
+    headers = {"Authorization": "Bearer integration-budget-key"}
+
+    spend_before = read_spend(redis_client, "integration-budget")
+
+    main_module.mock_provider.should_fail = True
+    try:
+        response = client.post("/v1/chat", headers=headers, json=BUDGET_CHAT_REQUEST)
+    finally:
+        main_module.mock_provider.should_fail = False
+
+    assert response.status_code == 503
+    assert read_spend(redis_client, "integration-budget") == pytest.approx(spend_before)
+
+
+def test_unpriced_model_is_refused_rather_than_served_unmetered(monkeypatch):
+    """Budget enforcement is impossible without pricing, so the request is refused.
+
+    This previously surfaced as a bare 500 raised from cost accounting *after* the
+    provider call had already succeeded and cost real money.
+    """
+    monkeypatch.setattr(budget_module, "MODEL_PRICING", {})
+    client, _redis_client, _circuit_breaker = create_test_client(monkeypatch)
+
+    response = client.post(
+        "/v1/chat",
+        headers={"Authorization": "Bearer integration-lifecycle-key"},
+        json=CHAT_REQUEST,
+    )
+
+    assert response.status_code == 500
+    assert "pricing" in response.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
