@@ -136,6 +136,26 @@ def enrich_request_with_team_system_prompt(
     return request
 
 
+def get_allowed_provider_priority(team_config: dict[str, Any]) -> list[str]:
+    """Return the team's provider priority filtered by its provider allowlist.
+
+    ``allowed_providers`` is the authorization boundary; ``provider_priority`` is only
+    an ordering preference. Enforcing the allowlist here — the single place every
+    routing decision reads — means a priority list cannot grant access to a provider
+    the team was never authorized for.
+
+    Enforcement is fail-closed: a team with an empty or missing ``allowed_providers``
+    resolves to no providers at all, so an incomplete config denies traffic rather
+    than silently granting every registered provider.
+    """
+    provider_priority = team_config.get(
+        "provider_priority",
+        team_config.get("allowed_providers", []),
+    )
+    allowed_providers = set(team_config.get("allowed_providers", []))
+    return [name for name in provider_priority if name in allowed_providers]
+
+
 def select_provider(
     team_config: dict[str, Any],
     health_monitor: HealthMonitor,
@@ -152,10 +172,7 @@ def select_provider(
     if candidates:
         return candidates[0][1]
 
-    provider_priority = team_config.get(
-        "provider_priority",
-        team_config.get("allowed_providers", []),
-    )
+    provider_priority = get_allowed_provider_priority(team_config)
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail=(
@@ -172,10 +189,7 @@ def get_provider_candidates(
     circuit_breaker: CircuitBreaker | None = None,
 ) -> list[tuple[str, LLMProvider]]:
     """Return provider candidates ordered by circuit state and team priority."""
-    provider_priority = team_config.get(
-        "provider_priority",
-        team_config.get("allowed_providers", []),
-    )
+    provider_priority = get_allowed_provider_priority(team_config)
     attempted_providers = [
         provider_name for provider_name in provider_priority if provider_name in providers
     ]
@@ -191,10 +205,7 @@ def get_provider_candidates(
 
 def get_first_priority_provider(team_config: dict[str, Any]) -> str | None:
     """Return the team's first configured provider preference."""
-    provider_priority = team_config.get(
-        "provider_priority",
-        team_config.get("allowed_providers", []),
-    )
+    provider_priority = get_allowed_provider_priority(team_config)
     return provider_priority[0] if provider_priority else None
 
 
@@ -247,10 +258,7 @@ async def call_chat_with_fallback(
             ).inc()
         return provider_response
 
-    provider_priority = team_config.get(
-        "provider_priority",
-        team_config.get("allowed_providers", []),
-    )
+    provider_priority = get_allowed_provider_priority(team_config)
     detail = (
         "All providers failed or are unavailable. Attempted providers: "
         f"{', '.join(provider_priority) if provider_priority else 'none'}."

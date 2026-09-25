@@ -35,7 +35,13 @@ def make_providers() -> dict[str, LLMProvider]:
 
 
 def make_team_config() -> dict:
-    return {"provider_priority": ["ollama", "mock"]}
+    # allowed_providers is the authorization boundary and is enforced in routing, so a
+    # team config that omits it authorizes nothing. It must list every provider the
+    # priority chain is allowed to reach.
+    return {
+        "allowed_providers": ["ollama", "mock"],
+        "provider_priority": ["ollama", "mock"],
+    }
 
 
 def set_status(monitor: HealthMonitor, provider_name: str, provider_status: str) -> None:
@@ -120,3 +126,37 @@ def test_raises_503_when_all_priority_provider_circuits_are_open():
 
     assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     assert "ollama, mock" in exc_info.value.detail
+
+
+def test_provider_outside_the_allowlist_is_never_selected():
+    """provider_priority must not grant access to a provider the team cannot use."""
+    monitor = HealthMonitor()
+    providers = make_providers()
+    circuit_breaker = CircuitBreaker()
+    team_config = {
+        "allowed_providers": ["mock"],
+        "provider_priority": ["ollama", "mock"],
+    }
+
+    selected_provider = select_provider(
+        team_config,
+        monitor,
+        providers,
+        circuit_breaker,
+    )
+
+    assert selected_provider.provider_name == "mock"
+
+
+def test_empty_allowlist_denies_every_provider():
+    """Enforcement is fail-closed: an incomplete config must not grant access."""
+    monitor = HealthMonitor()
+    providers = make_providers()
+    circuit_breaker = CircuitBreaker()
+    team_config = {"provider_priority": ["ollama", "mock"]}
+
+    with pytest.raises(HTTPException) as exc_info:
+        select_provider(team_config, monitor, providers, circuit_breaker)
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert "none" in exc_info.value.detail
