@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from app.auth import verify_api_key
+from app.auth import verify_admin_key, verify_api_key
 from app.budget import add_spend, calculate_cost, check_budget
 from app.circuit_breaker import CircuitBreaker
 from app.config import load_teams_config
@@ -85,7 +85,9 @@ async def metrics() -> Response:
 
 
 @app.get("/admin/health")
-async def admin_health() -> dict[str, dict[str, object]]:
+async def admin_health(
+    _admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, dict[str, object]]:
     """Return current provider health statuses."""
     response: dict[str, dict[str, object]] = {}
     for provider_name in health_monitor.providers:
@@ -110,7 +112,9 @@ async def admin_health() -> dict[str, dict[str, object]]:
 
 
 @app.post("/admin/mock/toggle-failure")
-async def toggle_mock_failure() -> dict[str, bool]:
+async def toggle_mock_failure(
+    _admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, bool]:
     """Toggle mock provider failure mode for local health monitor testing."""
     mock_provider.should_fail = not mock_provider.should_fail
     return {"should_fail": mock_provider.should_fail}

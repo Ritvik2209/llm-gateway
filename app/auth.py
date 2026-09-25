@@ -44,3 +44,22 @@ def verify_api_key(
         )
 
     return get_team_from_api_key(api_key.strip(), teams_config or {})
+
+
+def verify_admin_key(
+    team_config: Annotated[dict[str, Any], Depends(verify_api_key)],
+) -> dict[str, Any]:
+    """Authenticate an admin-scoped key for operational endpoints.
+
+    Operational endpoints expose cross-tenant state (every provider's health) and can
+    change gateway behaviour, so a valid tenant key is not sufficient authorization.
+    Admin rights are an explicit per-team flag, defaulting to false, so no tenant
+    gains them by accident.
+    """
+    if not team_config.get("is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires an admin API key.",
+        )
+
+    return team_config

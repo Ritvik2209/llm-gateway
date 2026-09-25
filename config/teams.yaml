@@ -24,3 +24,15 @@ teams:
     system_prompt: null
     requests_per_minute: 100000
     monthly_budget_usd: 999999.00
+
+  # Operational key for /admin endpoints. is_admin defaults to false for every other
+  # team, so tenant keys cannot read cross-provider health or change gateway state.
+  - team_id: "team-admin"
+    api_key: "demo-team-admin-local-only"
+    allowed_models: []
+    allowed_providers: []
+    provider_priority: []
+    system_prompt: null
+    requests_per_minute: 60
+    monthly_budget_usd: 0.00
+    is_admin: true

@@ -47,6 +47,7 @@ def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, An
             "system_prompt": team.get("system_prompt"),
             "requests_per_minute": team.get("requests_per_minute", 60),
             "monthly_budget_usd": team.get("monthly_budget_usd", 0.0),
+            "is_admin": team.get("is_admin", False),
         }
 
     return teams_by_api_key
