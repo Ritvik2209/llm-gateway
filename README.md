@@ -15,7 +15,8 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 - **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, and monthly budget.
 - **Prometheus + Grafana observability**, with the datasource and a five-panel dashboard provisioned as code so the stack comes up already wired.
 - **One-command setup** via Docker Compose (gateway, Redis, Prometheus, Grafana).
-- **Retry with exponential backoff** on provider calls, and **quota-aware health monitoring**: provider health is learned passively from real request outcomes, and synthetic probes are spent only where there is no cheaper signal — a provider never seen, or one whose circuit is open and therefore receiving no traffic.
+- **Classified retry and fallback** — provider failures are typed rather than stringly-wrapped, so a rejected credential fails immediately instead of consuming 3.5s of backoff, a rejected request does not count against the provider that correctly refused it, and a rate limit the provider says will outlast the backoff budget fails over at once instead of retrying into a wall.
+- **Exponential backoff** on retryable provider calls, and **quota-aware health monitoring**: provider health is learned passively from real request outcomes, and synthetic probes are spent only where there is no cheaper signal — a provider never seen, or one whose circuit is open and therefore receiving no traffic.
 
 ## Architecture
 
@@ -75,7 +76,7 @@ Each provider has an independent circuit breaker (`app/circuit_breaker.py`):
                                     └───────────────┘
 ```
 
-Thresholds are the defaults in `app/circuit_breaker.py`: `failure_threshold=4`, `cooldown_seconds=30`. Provider calls are retried up to 4 times with exponential backoff (`app/retry.py`: `max_retries=3`, `base_delay=0.5`), and one exhausted provider records exactly one circuit-breaker failure.
+Thresholds are the defaults in `app/circuit_breaker.py`: `failure_threshold=4`, `cooldown_seconds=30`. Retryable provider calls are retried up to 4 times with exponential backoff (`app/retry.py`: `max_retries=3`, `base_delay=0.5`), and one exhausted provider records exactly one circuit-breaker failure. Non-retryable failures (`app/providers/errors.py`) skip retry and fallback entirely, and a failure the provider is not at fault for — a request it correctly refused — is excluded from its health and circuit state.
 
 ### Endpoints
 
@@ -148,9 +149,9 @@ pip install -r requirements.txt
 pytest
 ```
 
-**63 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**83 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
-Ten of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
+Twelve of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
 ## Load Test Results
 
@@ -201,6 +202,7 @@ These were found by testing the running system, and are documented rather than p
 - **Health monitoring is decoupled from routing.** `get_provider_candidates` accepts a `HealthMonitor` but never reads it; only circuit-breaker state affects selection. A provider marked `down` by health checks is still attempted until its circuit opens on real failures.
 - **The mock provider would return fabricated content as HTTP 200 if a team allowed it.** It is excluded from every real team's chain and blocked by allowlist enforcement, so this is closed by configuration rather than by construction — a team that explicitly allows `mock` can still receive `"mock response"` with a success status.
 - **The mock provider is priced at $0.00**, so mock traffic never accumulates spend and budget caps cannot be exercised against it without overriding the pricing table in tests.
+- **Only the non-streaming provider paths are classified.** `chat_stream` still raises untyped errors, and a mid-stream failure feeds neither the circuit breaker nor the health monitor, so streaming failures are invisible to both.
 - **Health status is still decoupled from routing.** Provider health is now accurate and cheap to collect, but `get_provider_candidates` still does not read it — only circuit-breaker state gates a provider. A probe that detects recovery does not close the circuit; that still requires a real request after the cooldown.
 - **`gateway_request_duration_seconds` measures the provider call only**, excluding auth, rate limiting, budget checks, and queueing. It is not end-to-end latency and should not be compared against client-side measurements.
 

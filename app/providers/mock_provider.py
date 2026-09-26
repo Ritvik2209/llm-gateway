@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from app.models.schemas import UnifiedChatRequest, UnifiedChatResponse
 from app.providers.base import LLMProvider
+from app.providers.errors import ProviderUnavailable
 
 
 class MockProvider(LLMProvider):
@@ -23,7 +24,7 @@ class MockProvider(LLMProvider):
 
     async def chat(self, request: UnifiedChatRequest) -> UnifiedChatResponse:
         if self.should_fail:
-            raise RuntimeError("Mock provider simulated failure")
+            raise ProviderUnavailable("Mock provider simulated failure")
 
         await asyncio.sleep(self.latency_seconds)
         return UnifiedChatResponse(
@@ -40,7 +41,7 @@ class MockProvider(LLMProvider):
         self, request: UnifiedChatRequest
     ) -> AsyncGenerator[str, None]:
         if self.should_fail:
-            raise RuntimeError("Mock provider simulated failure")
+            raise ProviderUnavailable("Mock provider simulated failure")
 
         await asyncio.sleep(self.latency_seconds)
         yield "mock "

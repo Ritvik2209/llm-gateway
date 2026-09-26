@@ -10,6 +10,14 @@ import httpx
 from app.config import GROQ_API_KEY
 from app.models.schemas import UnifiedChatRequest, UnifiedChatResponse
 from app.providers.base import LLMProvider
+from app.providers.errors import (
+    ProviderAuthError,
+    ProviderRateLimited,
+    ProviderTimeout,
+    ProviderUnavailable,
+    error_class_for_status,
+    parse_retry_after,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +45,9 @@ class GroqProvider(LLMProvider):
 
     def _build_headers(self) -> dict[str, str]:
         if not self.api_key:
-            raise RuntimeError("Groq chat request failed: GROQ_API_KEY is not set")
+            raise ProviderAuthError(
+                "Groq chat request failed: GROQ_API_KEY is not set"
+            )
 
         return {"Authorization": f"Bearer {self.api_key}"}
 
@@ -80,12 +90,22 @@ class GroqProvider(LLMProvider):
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
+            error_class = error_class_for_status(exc.response.status_code)
+            message = (
                 "Groq chat request failed with "
                 f"status {exc.response.status_code}: {exc.response.text}"
-            ) from exc
+            )
+            if error_class is ProviderRateLimited:
+                raise ProviderRateLimited(
+                    message,
+                    status_code=exc.response.status_code,
+                    retry_after=parse_retry_after(exc.response.headers),
+                ) from exc
+            raise error_class(message, status_code=exc.response.status_code) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeout(f"Groq chat request timed out: {exc}") from exc
         except httpx.RequestError as exc:
-            raise RuntimeError(f"Groq chat request failed: {exc}") from exc
+            raise ProviderUnavailable(f"Groq chat request failed: {exc}") from exc
 
         response_data = response.json()
         choice = response_data.get("choices", [{}])[0]

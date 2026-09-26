@@ -35,6 +35,7 @@ from app.metrics import (
 )
 from app.models.schemas import ChatMessage, UnifiedChatRequest, UnifiedChatResponse
 from app.providers.base import LLMProvider
+from app.providers.errors import ProviderError
 from app.providers.groq_provider import GroqProvider
 from app.providers.mock_provider import MockProvider
 from app.providers.ollama_provider import OllamaProvider
@@ -315,15 +316,31 @@ async def call_chat_with_fallback(
                 team_id=team_id,
                 provider=provider_name,
             ).observe(elapsed)
+
+            provider_at_fault = getattr(exc, "provider_at_fault", True)
             ERRORS_TOTAL.labels(
                 team_id=team_id,
                 provider=provider_name,
-                error_type="provider_error",
+                error_type=type(exc).__name__ if isinstance(exc, ProviderError)
+                else "provider_error",
             ).inc()
+
+            if provider_at_fault:
+                circuit_breaker.record_failure(provider_name)
+                # Real traffic is the cheapest health signal there is, so feed it back.
+                health_monitor.record_request_outcome(provider_name, succeeded=False)
+
+            if isinstance(exc, ProviderError) and not exc.retryable:
+                # Trying the next provider would not help either: rejected credentials
+                # are a gateway misconfiguration, and a request the provider refused on
+                # its merits will be refused elsewhere. Surface it rather than masking
+                # it behind a fallback that silently moves the traffic and its cost.
+                raise HTTPException(
+                    status_code=exc.client_status_code,
+                    detail=str(exc),
+                ) from exc
+
             last_exception = exc
-            circuit_breaker.record_failure(provider_name)
-            # Real traffic is the cheapest health signal there is, so feed it back.
-            health_monitor.record_request_outcome(provider_name, succeeded=False)
             continue
 
         elapsed = time.perf_counter() - started_at

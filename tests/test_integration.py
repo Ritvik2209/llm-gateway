@@ -32,6 +32,7 @@ from app import main as main_module
 from app.circuit_breaker import CircuitBreaker
 from app.config import MODEL_PRICING
 from app.models.schemas import UnifiedChatResponse
+from app.providers.errors import ProviderAuthError, ProviderRequestRejected
 from app.retry import call_with_retry as real_call_with_retry
 
 
@@ -351,6 +352,64 @@ def test_provider_that_cannot_serve_the_model_is_never_attempted(monkeypatch):
     # Nothing was attempted, so no provider was penalised for a request it could not have
     # served.
     assert circuit_breaker.get_state("mock") == "closed"
+
+
+def test_non_retryable_failure_surfaces_instead_of_falling_back(monkeypatch):
+    """An auth failure is a gateway misconfiguration, so hiding it behind a fallback is
+    worse than failing: the traffic and its cost move to another provider silently.
+    """
+    client, _redis_client, circuit_breaker = create_test_client(monkeypatch)
+
+    class RejectingProvider:
+        provider_name = "mock"
+
+        async def chat(self, request):
+            raise ProviderAuthError("Mock credentials rejected")
+
+        async def chat_stream(self, request):
+            yield ""
+
+    monkeypatch.setattr(main_module, "mock_provider", RejectingProvider())
+    monkeypatch.setattr(main_module, "ollama_provider", StubOllamaProvider())
+
+    response = client.post(
+        "/v1/chat",
+        headers={"Authorization": "Bearer integration-fallback-key"},
+        json=CHAT_REQUEST,
+    )
+
+    # 502, not a fallback to the healthy second provider in the chain.
+    assert response.status_code == 502
+    assert "credentials" in response.json()["detail"].lower()
+
+
+def test_a_rejected_request_does_not_penalise_the_provider(monkeypatch):
+    """The provider is healthy; the request was not. Its circuit must stay closed."""
+    client, _redis_client, circuit_breaker = create_test_client(monkeypatch)
+
+    class FussyProvider:
+        provider_name = "mock"
+
+        async def chat(self, request):
+            raise ProviderRequestRejected("Prompt rejected by content policy")
+
+        async def chat_stream(self, request):
+            yield ""
+
+    monkeypatch.setattr(main_module, "mock_provider", FussyProvider())
+
+    for _ in range(5):
+        response = client.post(
+            "/v1/chat",
+            headers={"Authorization": "Bearer integration-lifecycle-key"},
+            json=CHAT_REQUEST,
+        )
+        assert response.status_code == 400
+
+    # Five rejected requests would have opened the circuit under the old policy, where
+    # every failure counted against the provider regardless of cause.
+    assert circuit_breaker.get_state("mock") == "closed"
+    assert main_module.health_monitor.get_status("mock") != "down"
 
 
 # ---------------------------------------------------------------------------

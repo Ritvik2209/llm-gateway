@@ -9,6 +9,14 @@ import httpx
 
 from app.models.schemas import UnifiedChatRequest, UnifiedChatResponse
 from app.providers.base import LLMProvider
+from app.providers.errors import (
+    ProviderAuthError,
+    ProviderRateLimited,
+    ProviderTimeout,
+    ProviderUnavailable,
+    error_class_for_status,
+    parse_retry_after,
+)
 
 
 class OllamaProvider(LLMProvider):
@@ -45,12 +53,22 @@ class OllamaProvider(LLMProvider):
                 response = await client.post(f"{self.base_url}/api/chat", json=payload)
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
+            error_class = error_class_for_status(exc.response.status_code)
+            message = (
                 "Ollama chat request failed with "
                 f"status {exc.response.status_code}: {exc.response.text}"
-            ) from exc
+            )
+            if error_class is ProviderRateLimited:
+                raise ProviderRateLimited(
+                    message,
+                    status_code=exc.response.status_code,
+                    retry_after=parse_retry_after(exc.response.headers),
+                ) from exc
+            raise error_class(message, status_code=exc.response.status_code) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeout(f"Ollama chat request timed out: {exc}") from exc
         except httpx.RequestError as exc:
-            raise RuntimeError(f"Ollama chat request failed: {exc}") from exc
+            raise ProviderUnavailable(f"Ollama chat request failed: {exc}") from exc
 
         response_data = response.json()
         message = response_data.get("message") or {}
