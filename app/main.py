@@ -13,6 +13,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from app.auth import verify_admin_key, verify_api_key
 from app.budget import (
     calculate_cost,
+    estimate_input_tokens,
     get_current_spend,
     estimate_max_cost,
     reconcile_spend,
@@ -43,7 +44,11 @@ from app.providers.errors import ProviderError
 from app.providers.groq_provider import GroqProvider
 from app.providers.mock_provider import MockProvider
 from app.providers.ollama_provider import OllamaProvider
-from app.rate_limiter import check_rate_limit, get_redis_client
+from app.rate_limiter import (
+    check_rate_limit,
+    get_redis_client,
+    record_token_usage,
+)
 from app.retry import call_with_retry
 
 
@@ -442,20 +447,28 @@ async def chat(
                 detail=f'Model "{request.model}" is not allowed for this team.',
             )
 
-        allowed, _remaining_quota = await check_rate_limit(
+        # Only prompt tokens are known before the call; output is charged afterwards by
+        # record_token_usage.
+        prompt_tokens = estimate_input_tokens(request.messages)
+        allowed, _remaining_quota, limit_kind = await check_rate_limit(
             team_id=team_id,
             requests_per_minute=team_config.get("requests_per_minute", 60),
             redis_client=app.state.redis_client,
+            tokens_per_minute=team_config.get("tokens_per_minute", 0),
+            estimated_tokens=prompt_tokens,
         )
         if not allowed:
             ERRORS_TOTAL.labels(
                 team_id=team_id,
                 provider=request_provider,
-                error_type="rate_limited",
+                error_type=f"rate_limited_{limit_kind}",
             ).inc()
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded. Please retry later.",
+                detail=(
+                    f"Rate limit exceeded on {limit_kind} per minute. "
+                    "Please retry later."
+                ),
                 headers={"Retry-After": "60"},
             )
 
@@ -611,6 +624,15 @@ async def chat(
                     cost=cost,
                     team_spend=team_spend,
                 )
+                await record_token_usage(
+                    team_id=team_id,
+                    tokens=(
+                        stream_usage["input_tokens"]
+                        + stream_usage["output_tokens"]
+                        - prompt_tokens
+                    ),
+                    redis_client=app.state.redis_client,
+                )
                 REQUESTS_TOTAL.labels(
                     team_id=team_id,
                     model=request.model,
@@ -677,6 +699,17 @@ async def chat(
             model=request.model,
             cost=cost,
             team_spend=team_spend,
+        )
+        # The admission check charged an estimate of the prompt only, so settle up with
+        # what the provider actually reported.
+        await record_token_usage(
+            team_id=team_id,
+            tokens=(
+                provider_response.input_tokens
+                + provider_response.output_tokens
+                - prompt_tokens
+            ),
+            redis_client=app.state.redis_client,
         )
         REQUESTS_TOTAL.labels(
             team_id=team_id,

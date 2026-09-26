@@ -68,6 +68,9 @@ def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, An
             ),
             "system_prompt": team.get("system_prompt"),
             "requests_per_minute": team.get("requests_per_minute", 60),
+            # 0 disables token limiting, so teams configured before this limit
+            # existed keep their previous behaviour.
+            "tokens_per_minute": team.get("tokens_per_minute", 0),
             "monthly_budget_usd": team.get("monthly_budget_usd", 0.0),
             "is_admin": team.get("is_admin", False),
         }

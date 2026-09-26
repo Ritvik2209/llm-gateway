@@ -11,18 +11,13 @@ Conventions follow the existing suite (see `test_enrichment.py`): plain test fun
 
 Every test uses the mock provider only, so the suite is deterministic, offline and free.
 
-NOTE on the Redis fake: `fakeredis` is used for storage, so budget accounting exercises genuine
-Redis `INCRBYFLOAT`/`GET` semantics (values round-trip as strings). However, the rate limiter runs a
-Lua script via `EVAL` (`app/rate_limiter.py:12-24`), and fakeredis can only execute Lua when `lupa`
-is installed - it is not installed and is not in `requirements.txt`, so `EVAL` raises
-`unknown command 'eval'`. `_FakeRedis` therefore subclasses fakeredis and emulates only that one
-script in Python, mirroring the hand-rolled fake already used in `test_rate_limiter.py`.
+The Redis double lives in `tests/fakes.py` and is shared with `test_rate_limiter.py`; see its
+docstring for why the rate limiter's Lua script has to be transcribed rather than executed.
 """
 
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-import fakeredis.aioredis
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
@@ -34,6 +29,7 @@ from app.config import MODEL_PRICING
 from app.models.schemas import UnifiedChatResponse
 from app.providers.errors import ProviderAuthError, ProviderRequestRejected
 from app.retry import call_with_retry as real_call_with_retry
+from tests.fakes import FakeRedis
 
 
 CHAT_REQUEST = {
@@ -91,6 +87,16 @@ TEAMS_CONFIG = {
         "requests_per_minute": 2,
         "monthly_budget_usd": 10.0,
     },
+    "integration-tokenlimit-key": {
+        "team_id": "integration-tokenlimit",
+        "allowed_models": ["mock-model"],
+        "allowed_providers": ["mock"],
+        "provider_priority": ["mock"],
+        # Plenty of request headroom, so only the token limit can reject.
+        "requests_per_minute": 1000,
+        "tokens_per_minute": 40,
+        "monthly_budget_usd": 10.0,
+    },
 }
 
 # Which providers can serve which models. Routing consults this before attempting a
@@ -119,33 +125,6 @@ PRICED_MOCK_MODEL = {
 PRICED_COST_PER_REQUEST = 0.0004
 
 
-class _FakeRedis(fakeredis.aioredis.FakeRedis):
-    """fakeredis with a Python emulation of the rate limiter's Lua sliding window."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._rate_limit_windows: dict[str, list[tuple[float, str]]] = {}
-
-    async def eval(self, script, numkeys, *args):
-        key, now, window_start, limit, member, _window_seconds = args
-        now = float(now)
-        window_start = float(window_start)
-        limit = int(limit)
-
-        entries = [
-            (score, existing_member)
-            for score, existing_member in self._rate_limit_windows.get(key, [])
-            if score > window_start
-        ]
-        self._rate_limit_windows[key] = entries
-
-        if len(entries) < limit:
-            entries.append((now, member))
-            return [1, limit - len(entries)]
-
-        return [0, 0]
-
-
 async def _immediate_retry(provider, request, max_retries=3, base_delay=0.5):
     """`call_with_retry` with the backoff removed.
 
@@ -168,7 +147,7 @@ def create_test_client(monkeypatch):
     keeps the lifespan handler from running, so no background health-check task starts and no real
     provider is ever contacted.
     """
-    redis_client = _FakeRedis(decode_responses=True)
+    redis_client = FakeRedis(decode_responses=True)
     circuit_breaker = CircuitBreaker()
 
     monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS_CONFIG)
@@ -642,3 +621,43 @@ def test_requests_beyond_rate_limit_are_rejected_with_429(monkeypatch):
         assert throttled.status_code == 429
         assert throttled.headers.get("Retry-After") == "60"
         assert "rate limit" in throttled.json()["detail"].lower()
+
+
+def test_token_limit_rejects_independently_of_the_request_limit(monkeypatch):
+    """A team well inside its request limit can still be throttled on tokens.
+
+    This is the failure the gateway previously could not prevent: Groq rejected the
+    real-provider test on tokens per minute, not requests, while the gateway was only
+    counting requests and so saw nothing to limit.
+    """
+    client, _redis_client, _circuit_breaker = create_test_client(monkeypatch)
+    headers = {"Authorization": "Bearer integration-tokenlimit-key"}
+
+    statuses = []
+    for _ in range(10):
+        response = client.post("/v1/chat", headers=headers, json=CHAT_REQUEST)
+        statuses.append(response.status_code)
+        if response.status_code == 429:
+            break
+
+    assert 200 in statuses, "no request was served"
+    assert statuses[-1] == 429, "the token limit never rejected"
+
+    body = client.post("/v1/chat", headers=headers, json=CHAT_REQUEST)
+    assert body.status_code == 429
+    # The message names which limit was hit; a generic 429 cannot be acted on.
+    assert "tokens per minute" in body.json()["detail"]
+    assert body.headers.get("Retry-After") == "60"
+
+
+def test_request_limit_still_reports_itself_distinctly(monkeypatch):
+    """The two limits must be distinguishable to the caller."""
+    client, _redis_client, _circuit_breaker = create_test_client(monkeypatch)
+    headers = {"Authorization": "Bearer integration-ratelimit-key"}
+
+    for _ in range(2):
+        assert client.post("/v1/chat", headers=headers, json=CHAT_REQUEST).status_code == 200
+
+    throttled = client.post("/v1/chat", headers=headers, json=CHAT_REQUEST)
+    assert throttled.status_code == 429
+    assert "requests per minute" in throttled.json()["detail"]

@@ -10,9 +10,9 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 
 - **Multi-provider routing** across three implemented providers: **Ollama** (local models), **Groq** (hosted inference), and a built-in **Mock** provider for deterministic testing.
 - **Capability-aware routing and failover** — a model catalog (`config/models.yaml`) declares which models each provider serves, so a provider that cannot serve the request is skipped rather than attempted and failed. Remaining candidates are tried in the team's priority order, and a per-provider circuit breaker stops hammering a provider that is already failing.
-- **Redis-backed rate limiting** using a sliding 60-second window implemented as an atomic Lua script.
+- **Redis-backed rate limiting on two dimensions** — requests per minute and tokens per minute — over a sliding 60-second window. Both limits are evaluated in a single Lua script, so a request rejected on tokens does not consume a request slot. Rejections name which limit was hit.
 - **Redis-backed budget enforcement** with a monthly per-team spend cap. Each request's worst-case cost is reserved atomically *before* the provider call and reconciled against actual usage afterwards, so the cap is a hard limit even under concurrency. An 80% crossing sets a warning header.
-- **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, and monthly budget.
+- **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, token rate, and monthly budget.
 - **Prometheus + Grafana observability**, with the datasource and a five-panel dashboard provisioned as code so the stack comes up already wired.
 - **One-command setup** via Docker Compose (gateway, Redis, Prometheus, Grafana).
 - **Classified retry and fallback** — provider failures are typed rather than stringly-wrapped, so a rejected credential fails immediately instead of consuming 3.5s of backoff, a rejected request does not count against the provider that correctly refused it, and a rate limit the provider says will outlast the backoff budget fails over at once instead of retrying into a wall.
@@ -32,7 +32,7 @@ Authentication          Bearer API key → team config          401 on unknown k
 Model authorization     model ∈ team.allowed_models           403 if not allowed
   │
   ▼
-Rate limiting           Redis sliding window, 60s             429 + Retry-After
+Rate limiting           requests + tokens, sliding 60s        429 + Retry-After
   │
   ▼
 Budget reservation      reserve worst-case cost atomically    402 if it will not fit
@@ -149,9 +149,9 @@ pip install -r requirements.txt
 pytest
 ```
 
-**85 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**94 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
-Fourteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
+Sixteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
 ## Load Test Results
 

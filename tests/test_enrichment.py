@@ -49,7 +49,8 @@ class CapturingProvider:
 
 def create_test_client(monkeypatch, provider):
     async def allow_request(*args, **kwargs):
-        return True, 9
+        # (allowed, remaining_requests, limit_kind)
+        return True, 9, "ok"
 
     async def allow_budget(*args, **kwargs):
         # (allowed, spend_before, is_warning)
@@ -58,11 +59,15 @@ def create_test_client(monkeypatch, provider):
     async def record_spend(*args, **kwargs):
         return 0.0
 
+    async def record_tokens(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS_CONFIG)
     monkeypatch.setattr(main_module, "ollama_provider", provider)
     monkeypatch.setattr(main_module, "check_rate_limit", allow_request)
     monkeypatch.setattr(main_module, "reserve_budget", allow_budget)
     monkeypatch.setattr(main_module, "reconcile_spend", record_spend)
+    monkeypatch.setattr(main_module, "record_token_usage", record_tokens)
     return TestClient(main_module.app)
 
 

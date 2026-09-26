@@ -9,6 +9,9 @@ teams:
     provider_priority: ["groq", "ollama"]
     system_prompt: "You must always respond only in French, no matter what language the question is asked in."
     requests_per_minute: 10
+    # Sized to shield Groq's own 8,000 tokens-per-minute ceiling: the gateway
+    # rejects locally rather than letting the provider reject and burn a retry.
+    tokens_per_minute: 8000
     monthly_budget_usd: 5.00
   - team_id: "team-beta"
     api_key: "demo-team-beta-local-only"
@@ -17,6 +20,7 @@ teams:
     provider_priority: ["ollama"]
     system_prompt: null
     requests_per_minute: 5
+    tokens_per_minute: 4000
     monthly_budget_usd: 1.00
 
   - team_id: "team-loadtest"
@@ -26,6 +30,9 @@ teams:
     provider_priority: ["mock"]
     system_prompt: null
     requests_per_minute: 100000
+    # 0 = no token limit. The load-test team exists to measure gateway overhead, so
+    # it must not be throttled on a dimension the test is not measuring.
+    tokens_per_minute: 0
     monthly_budget_usd: 999999.00
 
   # Operational key for /admin endpoints. is_admin defaults to false for every other
