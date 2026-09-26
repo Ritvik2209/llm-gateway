@@ -3,7 +3,9 @@
 import asyncio
 import contextlib
 import logging
+import os
 import time
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
@@ -22,13 +24,18 @@ from app.budget import (
 )
 from app.circuit_breaker import CircuitBreaker
 from app.config import (
+    CONFIG_RELOAD_INTERVAL_SECONDS,
     HEALTH_CHECK_INTERVAL_SECONDS,
+    TEAMS_CONFIG_PATH,
+    MODEL_CATALOG_PATH,
     load_model_catalog,
     load_teams_config,
 )
 from app.health import HealthMonitor
 from app.metrics import (
     CIRCUIT_BREAKER_STATE as gateway_circuit_breaker_state,
+    CONFIG_LOADED_TIMESTAMP,
+    CONFIG_RELOADS_TOTAL,
     COST_USD_TOTAL,
     ERRORS_TOTAL,
     FALLBACK_TRIGGERED_TOTAL,
@@ -66,6 +73,84 @@ health_monitor = HealthMonitor()
 circuit_breaker = CircuitBreaker()
 
 
+class ConfigReloadError(RuntimeError):
+    """The configuration on disk could not be loaded, so it was not applied."""
+
+
+async def reload_configuration() -> dict[str, Any]:
+    """Re-read the config files and apply them without restarting.
+
+    Two properties make this safe to run against live traffic:
+
+    **Validated before applied.** Both files are parsed into new objects first, and only
+    swapped in if both succeed. A malformed edit is rejected and the running config keeps
+    serving — the alternative is that a YAML typo becomes an outage, which is not a
+    theoretical risk: the first defect found in this project was an unparseable
+    ``teams.yaml``.
+
+    **Swapped, never mutated.** The new objects replace the old references wholesale, so a
+    request in flight reads either the complete old config or the complete new one. Editing
+    the live dictionaries in place would let a request see a half-applied change.
+    """
+    try:
+        teams_config = load_teams_config(TEAMS_CONFIG_PATH)
+        model_catalog = load_model_catalog(MODEL_CATALOG_PATH)
+    except Exception as exc:
+        CONFIG_RELOADS_TOTAL.labels(result="rejected").inc()
+        logger.error("Configuration reload rejected, keeping previous config: %s", exc)
+        raise ConfigReloadError(str(exc)) from exc
+
+    app.state.teams_config = teams_config
+    app.state.model_catalog = model_catalog
+    app.state.config_loaded_at = datetime.now(timezone.utc)
+
+    CONFIG_RELOADS_TOTAL.labels(result="applied").inc()
+    CONFIG_LOADED_TIMESTAMP.set(app.state.config_loaded_at.timestamp())
+    await initialise_budget_gauges()
+
+    logger.info("Configuration reloaded: %s teams", len(teams_config))
+    return {
+        "teams": len(teams_config),
+        "providers_in_catalog": len(model_catalog),
+        "loaded_at": app.state.config_loaded_at.isoformat(),
+    }
+
+
+def _config_file_signature() -> tuple:
+    """Modification times of the config files, used to spot an edit."""
+    signature = []
+    for path in (TEAMS_CONFIG_PATH, MODEL_CATALOG_PATH):
+        try:
+            signature.append(os.path.getmtime(path))
+        except OSError:
+            signature.append(None)
+    return tuple(signature)
+
+
+async def watch_configuration(interval_seconds: int) -> None:
+    """Apply config edits automatically, so a policy change needs no deploy.
+
+    Polls modification times rather than taking a filesystem-notification dependency; at a
+    few seconds' interval the cost is two ``stat`` calls and the latency is bounded by the
+    interval. A rejected reload is retried on the next change, not on every tick, so a
+    broken file does not produce a stream of identical errors.
+    """
+    last_signature = _config_file_signature()
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        signature = _config_file_signature()
+        if signature == last_signature:
+            continue
+
+        last_signature = signature
+        try:
+            await reload_configuration()
+        except ConfigReloadError:
+            # Already logged, and the previous config is still serving.
+            continue
+
+
 async def initialise_budget_gauges() -> None:
     """Publish each team's cap and current spend at startup.
 
@@ -98,6 +183,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.providers = providers
     app.state.circuit_breaker = circuit_breaker
     await initialise_budget_gauges()
+    CONFIG_LOADED_TIMESTAMP.set(app.state.config_loaded_at.timestamp())
+    if CONFIG_RELOAD_INTERVAL_SECONDS > 0:
+        app.state.config_watch_task = asyncio.create_task(
+            watch_configuration(CONFIG_RELOAD_INTERVAL_SECONDS)
+        )
     app.state.health_check_task = asyncio.create_task(
         health_monitor.start_background_checks(
             interval_seconds=HEALTH_CHECK_INTERVAL_SECONDS,
@@ -107,16 +197,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
-        health_check_task = getattr(app.state, "health_check_task", None)
-        if health_check_task is not None:
-            health_check_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await health_check_task
+        for task_name in ("health_check_task", "config_watch_task"):
+            task = getattr(app.state, task_name, None)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
 
 app = FastAPI(title="LLM API Gateway", lifespan=lifespan)
 app.state.teams_config = load_teams_config()
 app.state.model_catalog = load_model_catalog()
+app.state.config_loaded_at = datetime.now(timezone.utc)
 app.state.redis_client = get_redis_client()
 app.state.providers = providers
 app.state.circuit_breaker = circuit_breaker
@@ -159,6 +251,45 @@ async def admin_health(
             "error_rate": provider_health.error_rate if provider_health else 0.0,
         }
     return response
+
+
+@app.post("/admin/config/reload")
+async def admin_reload_config(
+    admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, Any]:
+    """Apply the config files on disk without restarting the gateway."""
+    try:
+        result = await reload_configuration()
+    except ConfigReloadError as exc:
+        # 409: the request was well formed, but the state on disk cannot be applied. The
+        # previous configuration is still serving traffic.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Configuration was not applied and the previous config is still in "
+                f"effect: {exc}"
+            ),
+        ) from exc
+
+    logger.info("Configuration reload requested by team %s", admin["team_id"])
+    return {"status": "applied", **result}
+
+
+@app.get("/admin/config")
+async def admin_config(
+    _admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, Any]:
+    """Report the configuration currently in effect."""
+    return {
+        "loaded_at": app.state.config_loaded_at.isoformat(),
+        "teams": sorted(
+            team_config["team_id"] for team_config in app.state.teams_config.values()
+        ),
+        "model_catalog": {
+            provider_name: sorted(models)
+            for provider_name, models in app.state.model_catalog.items()
+        },
+    }
 
 
 @app.post("/admin/mock/toggle-failure")

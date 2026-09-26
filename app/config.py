@@ -17,6 +17,13 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # and, on a metered free tier, enough for the monitor alone to exhaust a daily quota.
 HEALTH_CHECK_INTERVAL_SECONDS = int(os.getenv("HEALTH_CHECK_INTERVAL_SECONDS", "30"))
 
+TEAMS_CONFIG_PATH = os.getenv("TEAMS_CONFIG_PATH", "config/teams.yaml")
+MODEL_CATALOG_PATH = os.getenv("MODEL_CATALOG_PATH", "config/models.yaml")
+
+# How often to check whether the config files changed. 0 disables automatic reloading,
+# leaving the explicit admin endpoint as the only way to apply an edit.
+CONFIG_RELOAD_INTERVAL_SECONDS = int(os.getenv("CONFIG_RELOAD_INTERVAL_SECONDS", "5"))
+
 MODEL_PRICING = {
     "llama3.2": {
         "input_price_per_1k": 0.0,

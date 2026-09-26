@@ -77,3 +77,17 @@ def set_circuit_breaker_state(provider_name: str, state: str) -> None:
     CIRCUIT_BREAKER_STATE.labels(provider_name=provider_name).set(
         CIRCUIT_BREAKER_STATE_VALUES[state]
     )
+
+
+# A rejected reload is the interesting event: it means the running config and the file on
+# disk have diverged, and someone believes a change has taken effect when it has not.
+CONFIG_RELOADS_TOTAL = Counter(
+    "gateway_config_reloads_total",
+    "Configuration reload attempts.",
+    ["result"],
+)
+
+CONFIG_LOADED_TIMESTAMP = Gauge(
+    "gateway_config_loaded_timestamp_seconds",
+    "Unix timestamp of the configuration currently in effect.",
+)

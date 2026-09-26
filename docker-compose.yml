@@ -39,6 +39,10 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      # The Dockerfile copies config/ into the image so it runs standalone, but hot reload
+      # can only see edits if the directory is bind-mounted over that copy.
+      - ./config:/app/config:ro
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379

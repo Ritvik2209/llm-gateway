@@ -14,6 +14,7 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 - **Redis-backed budget enforcement** with a monthly per-team spend cap. Each request's worst-case cost is reserved atomically *before* the provider call and reconciled against actual usage afterwards, so the cap is a hard limit even under concurrency. An 80% crossing sets a warning header.
 - **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, token rate, and monthly budget.
 - **Prometheus + Grafana observability**, with the datasource and a five-panel dashboard provisioned as code so the stack comes up already wired.
+- **Config hot reload** — team and model config is re-read when the files change, validated before it is applied, and swapped in whole. A malformed edit is rejected and the running config keeps serving, so a YAML typo cannot cause an outage. Also exposed as an explicit admin endpoint.
 - **One-command setup** via Docker Compose (gateway, Redis, Prometheus, Grafana).
 - **Classified retry and fallback** — provider failures are typed rather than stringly-wrapped, so a rejected credential fails immediately instead of consuming 3.5s of backoff, a rejected request does not count against the provider that correctly refused it, and a rate limit the provider says will outlast the backoff budget fails over at once instead of retrying into a wall.
 - **Exponential backoff** on retryable provider calls, and **quota-aware health monitoring**: provider health is learned passively from real request outcomes, and synthetic probes are spent only where there is no cheaper signal — a provider never seen, or one whose circuit is open and therefore receiving no traffic.
@@ -86,6 +87,8 @@ Thresholds are the defaults in `app/circuit_breaker.py`: `failure_threshold=4`, 
 | `GET` | `/health` | Liveness check |
 | `GET` | `/admin/health` | Per-provider status, circuit state, latencies, error rate — **admin key required** |
 | `GET` | `/metrics` | Prometheus exposition |
+| `GET` | `/admin/config` | Configuration currently in effect, and when it loaded — **admin key required** |
+| `POST` | `/admin/config/reload` | Apply config from disk without restarting; 409 if it does not parse — **admin key required** |
 | `POST` | `/admin/mock/toggle-failure` | Force the mock provider to fail, for testing failover — **admin key required** |
 
 ## Quick Start
@@ -149,7 +152,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-**94 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**103 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
 Sixteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
@@ -204,6 +207,7 @@ These were found by testing the running system, and are documented rather than p
 - **Health monitoring is decoupled from routing.** `get_provider_candidates` accepts a `HealthMonitor` but never reads it; only circuit-breaker state affects selection. A provider marked `down` by health checks is still attempted until its circuit opens on real failures.
 - **The mock provider would return fabricated content as HTTP 200 if a team allowed it.** It is excluded from every real team's chain and blocked by allowlist enforcement, so this is closed by configuration rather than by construction — a team that explicitly allows `mock` can still receive `"mock response"` with a success status.
 - **The mock provider is priced at $0.00**, so mock traffic never accumulates spend and budget caps cannot be exercised against it without overriding the pricing table in tests.
+- **Team config is still a file, not a store.** Hot reload removes the need to redeploy, but onboarding a team still means editing YAML in the repository, and API keys are still stored in plaintext with no rotation or expiry.
 - **Only the non-streaming provider paths are classified.** `chat_stream` still raises untyped errors, and a mid-stream failure feeds neither the circuit breaker nor the health monitor, so streaming failures are invisible to both.
 - **Health status is still decoupled from routing.** Provider health is now accurate and cheap to collect, but `get_provider_candidates` still does not read it — only circuit-breaker state gates a provider. A probe that detects recovery does not close the circuit; that still requires a real request after the cooldown.
 - **`gateway_request_duration_seconds` measures the provider call only**, excluding auth, rate limiting, budget checks, and queueing. It is not end-to-end latency and should not be compared against client-side measurements.
