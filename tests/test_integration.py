@@ -92,6 +92,17 @@ TEAMS_CONFIG = {
     },
 }
 
+# Which providers can serve which models. Routing consults this before attempting a
+# provider, so a fallback chain only works where the chain genuinely overlaps: a provider
+# that cannot serve the requested model is not a fallback for it. Declaring the overlap
+# here makes that precondition explicit, rather than relying on a stub provider that
+# accepts whatever model name it is handed.
+MODEL_CATALOG = {
+    "mock": {"mock-model"},
+    "ollama": {"mock-model", "llama3.2"},
+    "groq": {"openai/gpt-oss-20b"},
+}
+
 # Mock responses report 10 input and 5 output tokens (app/providers/mock_provider.py:29-35).
 MOCK_INPUT_TOKENS = 10
 MOCK_OUTPUT_TOKENS = 5
@@ -162,6 +173,7 @@ def create_test_client(monkeypatch):
     monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS_CONFIG)
     monkeypatch.setattr(main_module.app.state, "redis_client", redis_client)
     monkeypatch.setattr(main_module.app.state, "circuit_breaker", circuit_breaker)
+    monkeypatch.setattr(main_module.app.state, "model_catalog", MODEL_CATALOG)
     monkeypatch.setattr(main_module, "call_with_retry", _immediate_retry)
 
     return TestClient(main_module.app), redis_client, circuit_breaker
@@ -304,6 +316,41 @@ def test_failing_first_provider_falls_back_transparently(monkeypatch):
     # stays closed. Scenario 3 covers what happens once the threshold is exceeded.
     assert circuit_breaker.get_state("mock") == "closed"
     assert main_module.mock_provider.should_fail is False
+
+
+def test_provider_that_cannot_serve_the_model_is_never_attempted(monkeypatch):
+    """A provider that does not host the model must be skipped, not discovered by failing.
+
+    Without the capability map the gateway would send the request anyway, exhaust the
+    retry budget with backoff, charge the failure to the circuit breaker, and only then
+    fall through. The reported reason distinguishes this permanent configuration mismatch
+    from the transient case where providers exist but their circuits are open.
+    """
+    client, _redis_client, circuit_breaker = create_test_client(monkeypatch)
+    # mock is the only provider in this team's chain, and it does not serve llama3.2.
+    monkeypatch.setitem(
+        main_module.app.state.teams_config,
+        "integration-lifecycle-key",
+        {
+            **TEAMS_CONFIG["integration-lifecycle-key"],
+            "allowed_models": ["llama3.2"],
+        },
+    )
+
+    response = client.post(
+        "/v1/chat",
+        headers={"Authorization": "Bearer integration-lifecycle-key"},
+        json={**CHAT_REQUEST, "model": "llama3.2"},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "llama3.2" in detail
+    assert "no provider that serves it" in detail
+
+    # Nothing was attempted, so no provider was penalised for a request it could not have
+    # served.
+    assert circuit_breaker.get_state("mock") == "closed"
 
 
 # ---------------------------------------------------------------------------

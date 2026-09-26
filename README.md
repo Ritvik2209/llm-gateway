@@ -9,7 +9,7 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 ## Features
 
 - **Multi-provider routing** across three implemented providers: **Ollama** (local models), **Groq** (hosted inference), and a built-in **Mock** provider for deterministic testing.
-- **Automatic failover** — when a provider fails, the request transparently retries down the team's priority chain, and a per-provider circuit breaker stops hammering a provider that is already failing.
+- **Capability-aware routing and failover** — a model catalog (`config/models.yaml`) declares which models each provider serves, so a provider that cannot serve the request is skipped rather than attempted and failed. Remaining candidates are tried in the team's priority order, and a per-provider circuit breaker stops hammering a provider that is already failing.
 - **Redis-backed rate limiting** using a sliding 60-second window implemented as an atomic Lua script.
 - **Redis-backed budget enforcement** with a monthly per-team spend cap. Each request's worst-case cost is reserved atomically *before* the provider call and reconciled against actual usage afterwards, so the cap is a hard limit even under concurrency. An 80% crossing sets a warning header.
 - **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, and monthly budget.
@@ -37,13 +37,13 @@ Rate limiting           Redis sliding window, 60s             429 + Retry-After
 Budget reservation      reserve worst-case cost atomically    402 if it will not fit
   │                     ≥80% → X-Budget-Warning header
   ▼
-Provider selection      priority chain + circuit breaker      503 if none available
+Provider selection      allowlist → model catalog → circuit   503 if none available
   │                     retry w/ backoff, fall through on failure
   ▼
 Response + accounting   reconcile reservation vs actual usage
 ```
 
-Provider selection walks the team's `provider_priority` list in order, skipping any provider whose circuit is open, and falling through to the next on failure:
+Provider selection filters the team's `provider_priority` list in three stages — the team's provider allowlist, whether the provider serves the requested model, then whether its circuit will accept an attempt — and falls through to the next candidate on failure:
 
 ```
 team-alpha: provider_priority = [ groq, ollama, mock ]
@@ -148,9 +148,9 @@ pip install -r requirements.txt
 pytest
 ```
 
-**56 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**57 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
-Nine of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
+Ten of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
 ## Load Test Results
 
@@ -201,7 +201,7 @@ These were found by testing the running system, and are documented rather than p
 - **Health monitoring is decoupled from routing.** `get_provider_candidates` accepts a `HealthMonitor` but never reads it; only circuit-breaker state affects selection. A provider marked `down` by health checks is still attempted until its circuit opens on real failures.
 - **The mock provider would return fabricated content as HTTP 200 if a team allowed it.** It is excluded from every real team's chain and blocked by allowlist enforcement, so this is closed by configuration rather than by construction — a team that explicitly allows `mock` can still receive `"mock response"` with a success status.
 - **The mock provider is priced at $0.00**, so mock traffic never accumulates spend and budget caps cannot be exercised against it without overriding the pricing table in tests.
-- **Health-monitor probes consume real provider quota.** Background probes issue real chat completions, so provider spend and rate-limit consumption are a function of uptime, not just request volume.
+- **Health-monitor probes consume real provider quota, heavily.** Background probes issue real chat completions every 10 seconds — 8,640 per day against a Groq free-tier limit of 1,000 requests per day, so the monitor alone exhausts the daily quota in under three hours of uptime. Observed in practice. Provider availability is therefore a function of gateway uptime rather than request volume, which is self-defeating for a component meant to protect availability.
 - **`gateway_request_duration_seconds` measures the provider call only**, excluding auth, rate limiting, budget checks, and queueing. It is not end-to-end latency and should not be compared against client-side measurements.
 
 ## Tech Stack

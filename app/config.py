@@ -28,6 +28,23 @@ MODEL_PRICING = {
 }
 
 
+def load_model_catalog(path: str = "config/models.yaml") -> dict[str, set[str]]:
+    """Load the map of which physical models each provider can serve.
+
+    Routing uses this to skip providers that cannot serve the requested model at all,
+    instead of discovering that fact by failing. A provider missing from the catalog
+    serves nothing, keeping the check fail-closed like the provider allowlist.
+    """
+    config_path = Path(path)
+    with config_path.open("r", encoding="utf-8") as catalog_file:
+        raw_catalog = yaml.safe_load(catalog_file) or {}
+
+    return {
+        provider_name: set(models or [])
+        for provider_name, models in (raw_catalog.get("providers") or {}).items()
+    }
+
+
 def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, Any]]:
     """Load team authentication and authorization config keyed by API key."""
     config_path = Path(path)

@@ -19,7 +19,7 @@ from app.budget import (
     reserve_budget,
 )
 from app.circuit_breaker import CircuitBreaker
-from app.config import load_teams_config
+from app.config import load_model_catalog, load_teams_config
 from app.health import HealthMonitor
 from app.metrics import (
     CIRCUIT_BREAKER_STATE as gateway_circuit_breaker_state,
@@ -77,6 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="LLM API Gateway", lifespan=lifespan)
 app.state.teams_config = load_teams_config()
+app.state.model_catalog = load_model_catalog()
 app.state.redis_client = get_redis_client()
 app.state.providers = providers
 app.state.circuit_breaker = circuit_breaker
@@ -175,6 +176,8 @@ def select_provider(
     health_monitor: HealthMonitor,
     providers: dict[str, LLMProvider],
     circuit_breaker: CircuitBreaker | None = None,
+    model: str | None = None,
+    model_catalog: dict[str, set[str]] | None = None,
 ) -> LLMProvider:
     """Select the best available provider from the team's priority order."""
     candidates = get_provider_candidates(
@@ -182,17 +185,50 @@ def select_provider(
         health_monitor,
         providers,
         circuit_breaker,
+        model=model,
+        model_catalog=model_catalog,
     )
     if candidates:
         return candidates[0][1]
 
-    provider_priority = get_allowed_provider_priority(team_config)
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=(
-            "No healthy providers available. Attempted providers: "
-            f"{', '.join(provider_priority) if provider_priority else 'none'}."
-        ),
+        detail=describe_unavailability(team_config, model, model_catalog),
+    )
+
+
+def describe_unavailability(
+    team_config: dict[str, Any],
+    model: str | None = None,
+    model_catalog: dict[str, set[str]] | None = None,
+) -> str:
+    """Explain why no provider is available, separating config from availability.
+
+    A chain where nobody serves the model is a permanent configuration mismatch, while a
+    chain whose circuits are all open is transient. The status code stays 503 in both
+    cases — the client genuinely cannot be served either way — but the operator needs to
+    know which, because only one of them will resolve on its own.
+    """
+    provider_priority = get_allowed_provider_priority(team_config)
+    if not provider_priority:
+        return "No healthy providers available. Attempted providers: none."
+
+    if model is not None and model_catalog is not None:
+        capable_providers = [
+            provider_name
+            for provider_name in provider_priority
+            if model in model_catalog.get(provider_name, set())
+        ]
+        if not capable_providers:
+            return (
+                f'No provider available for model "{model}". The provider chain for '
+                f"this team ({', '.join(provider_priority)}) contains no provider "
+                "that serves it."
+            )
+
+    return (
+        "No healthy providers available. Attempted providers: "
+        f"{', '.join(provider_priority)}."
     )
 
 
@@ -201,12 +237,30 @@ def get_provider_candidates(
     health_monitor: HealthMonitor,
     providers: dict[str, LLMProvider],
     circuit_breaker: CircuitBreaker | None = None,
+    model: str | None = None,
+    model_catalog: dict[str, set[str]] | None = None,
 ) -> list[tuple[str, LLMProvider]]:
-    """Return provider candidates ordered by circuit state and team priority."""
+    """Return provider candidates ordered by circuit state and team priority.
+
+    Candidates are filtered in three stages: the team's provider allowlist, whether the
+    provider can serve the requested model, and whether its circuit will accept an
+    attempt. The middle stage matters because a provider that does not host the model
+    cannot succeed no matter how many times it is retried.
+
+    ``model`` and ``model_catalog`` are optional so that tests can exercise priority and
+    circuit logic in isolation; the request path always supplies both.
+    """
     provider_priority = get_allowed_provider_priority(team_config)
     attempted_providers = [
         provider_name for provider_name in provider_priority if provider_name in providers
     ]
+
+    if model is not None and model_catalog is not None:
+        attempted_providers = [
+            provider_name
+            for provider_name in attempted_providers
+            if model in model_catalog.get(provider_name, set())
+        ]
     candidates: list[tuple[str, LLMProvider]] = []
 
     for provider_name in attempted_providers:
@@ -229,6 +283,7 @@ async def call_chat_with_fallback(
     health_monitor: HealthMonitor,
     circuit_breaker: CircuitBreaker,
     providers: dict[str, LLMProvider],
+    model_catalog: dict[str, set[str]] | None = None,
 ) -> UnifiedChatResponse:
     """Call providers in fallback order, recording circuit breaker outcomes."""
     candidates = get_provider_candidates(
@@ -236,6 +291,8 @@ async def call_chat_with_fallback(
         health_monitor,
         providers,
         circuit_breaker,
+        model=request.model,
+        model_catalog=model_catalog,
     )
     last_exception: Exception | None = None
     team_id = team_config["team_id"]
@@ -272,13 +329,17 @@ async def call_chat_with_fallback(
             ).inc()
         return provider_response
 
-    provider_priority = get_allowed_provider_priority(team_config)
-    detail = (
-        "All providers failed or are unavailable. Attempted providers: "
-        f"{', '.join(provider_priority) if provider_priority else 'none'}."
-    )
-    if last_exception is not None:
-        detail = f"{detail} Last error: {last_exception}"
+    if last_exception is None:
+        # Nothing was attempted at all, so "all providers failed" would be misleading:
+        # the chain was empty before any call was made.
+        detail = describe_unavailability(team_config, request.model, model_catalog)
+    else:
+        provider_priority = get_allowed_provider_priority(team_config)
+        detail = (
+            "All providers failed or are unavailable. Attempted providers: "
+            f"{', '.join(provider_priority) if provider_priority else 'none'}."
+            f" Last error: {last_exception}"
+        )
 
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -373,6 +434,8 @@ async def chat(
             health_monitor,
             runtime_providers,
             app.state.circuit_breaker,
+            model=request.model,
+            model_catalog=app.state.model_catalog,
         )
         if selected_candidates:
             selected_provider_name, selected_provider = selected_candidates[0]
@@ -382,6 +445,8 @@ async def chat(
                 health_monitor,
                 runtime_providers,
                 app.state.circuit_breaker,
+                model=request.model,
+                model_catalog=app.state.model_catalog,
             )
             selected_provider_name = next(
                 provider_name
@@ -483,6 +548,7 @@ async def chat(
                 health_monitor,
                 app.state.circuit_breaker,
                 runtime_providers,
+                model_catalog=app.state.model_catalog,
             )
         except Exception:
             # No provider served the request, so it incurred no provider cost. Holding

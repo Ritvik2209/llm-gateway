@@ -1,0 +1,21 @@
+# Which physical models each provider can actually serve.
+#
+# Routing consults this map before attempting a provider. Without it, a request for a
+# model a provider does not host is still sent: it fails, consumes the full retry budget
+# with backoff, counts as a circuit-breaker failure, and only then falls through. The map
+# makes an impossible attempt impossible rather than merely slow, and is the prerequisite
+# for fallback chains that can actually serve a fallback.
+#
+# A provider absent from this map serves nothing, so an incomplete catalog denies traffic
+# rather than silently attempting every provider.
+providers:
+  groq:
+    - "openai/gpt-oss-20b"
+
+  ollama:
+    - "llama3.2"
+
+  # The mock provider is test-only. It echoes back whatever model name it is given, but
+  # it is declared narrowly here so it cannot stand in for a real model by accident.
+  mock:
+    - "mock-model"
