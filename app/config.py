@@ -12,6 +12,11 @@ load_dotenv(override=True)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+# How often to probe providers that need probing. The spec calls for 30 seconds; the
+# request path had it hardcoded to 10, which is three times as many probes as intended
+# and, on a metered free tier, enough for the monitor alone to exhaust a daily quota.
+HEALTH_CHECK_INTERVAL_SECONDS = int(os.getenv("HEALTH_CHECK_INTERVAL_SECONDS", "30"))
+
 MODEL_PRICING = {
     "llama3.2": {
         "input_price_per_1k": 0.0,

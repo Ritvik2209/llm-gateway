@@ -15,7 +15,7 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 - **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, and monthly budget.
 - **Prometheus + Grafana observability**, with the datasource and a five-panel dashboard provisioned as code so the stack comes up already wired.
 - **One-command setup** via Docker Compose (gateway, Redis, Prometheus, Grafana).
-- **Retry with exponential backoff** on provider calls, and background health probes tracking per-provider status and latency.
+- **Retry with exponential backoff** on provider calls, and **quota-aware health monitoring**: provider health is learned passively from real request outcomes, and synthetic probes are spent only where there is no cheaper signal — a provider never seen, or one whose circuit is open and therefore receiving no traffic.
 
 ## Architecture
 
@@ -148,7 +148,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-**57 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**63 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
 Ten of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
@@ -201,7 +201,7 @@ These were found by testing the running system, and are documented rather than p
 - **Health monitoring is decoupled from routing.** `get_provider_candidates` accepts a `HealthMonitor` but never reads it; only circuit-breaker state affects selection. A provider marked `down` by health checks is still attempted until its circuit opens on real failures.
 - **The mock provider would return fabricated content as HTTP 200 if a team allowed it.** It is excluded from every real team's chain and blocked by allowlist enforcement, so this is closed by configuration rather than by construction — a team that explicitly allows `mock` can still receive `"mock response"` with a success status.
 - **The mock provider is priced at $0.00**, so mock traffic never accumulates spend and budget caps cannot be exercised against it without overriding the pricing table in tests.
-- **Health-monitor probes consume real provider quota, heavily.** Background probes issue real chat completions every 10 seconds — 8,640 per day against a Groq free-tier limit of 1,000 requests per day, so the monitor alone exhausts the daily quota in under three hours of uptime. Observed in practice. Provider availability is therefore a function of gateway uptime rather than request volume, which is self-defeating for a component meant to protect availability.
+- **Health status is still decoupled from routing.** Provider health is now accurate and cheap to collect, but `get_provider_candidates` still does not read it — only circuit-breaker state gates a provider. A probe that detects recovery does not close the circuit; that still requires a real request after the cooldown.
 - **`gateway_request_duration_seconds` measures the provider call only**, excluding auth, rate limiting, budget checks, and queueing. It is not end-to-end latency and should not be compared against client-side measurements.
 
 ## Tech Stack

@@ -250,7 +250,22 @@ visible only in `gateway_requests_total{provider="mock"}` and
 For any team whose traffic is not a load test, `mock` should not appear in `provider_priority` at
 all, and exhausting the real providers should surface an error rather than a fabricated success.
 
-### Health-monitor probes consume real provider quota
+### Health-monitor probes consume real provider quota — RESOLVED
+
+> **Resolved,** after the failure mode materialised: the monitor exhausted Groq's entire
+> free-tier allowance of 1,000 requests/day on its own, returning
+> `rate_limit_exceeded ... on requests per day (RPD): Limit 1000, Used 1000` and making the
+> provider unusable. The loop probed every provider every 10 seconds — 8,640 probes/day, and
+> `main.py` was overriding the 30-second default the spec calls for. Even 30 seconds would
+> have been 2,880/day, so no fixed interval fits a 1,000/day quota: the sustainable ceiling is
+> one probe per 86.4 seconds, which would consume the entire allowance and leave nothing for
+> real traffic.
+>
+> Health is now learned passively from real request outcomes, at zero quota cost, and probes
+> are spent only on providers with no cheaper signal — never seen, or circuit open and so
+> receiving no traffic. Measured over 75 seconds of uptime: one probe per provider at startup
+> and none after, against roughly seven or eight each previously. The original analysis
+> follows.
 
 The background health monitor issues real chat completions against each registered provider,
 including `groq`. These probes count against the account's token-per-minute allowance and compete

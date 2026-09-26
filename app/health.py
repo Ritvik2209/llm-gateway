@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 from time import perf_counter
 
 from app.models.schemas import ChatMessage, UnifiedChatRequest
@@ -57,30 +58,81 @@ class HealthMonitor:
             )
         except Exception as exc:
             logger.warning("Health check failed for %s: %s", provider_name, exc)
-            self._record_result(health, succeeded=False)
-            health.consecutive_failures += 1
-            if health.consecutive_failures >= 4:
-                health.status = "down"
-            elif health.consecutive_failures >= 2:
-                health.status = "degraded"
-            else:
-                health.status = "healthy" if health.error_rate < 0.5 else "degraded"
+            self._apply_outcome(health, succeeded=False)
         else:
-            latency = perf_counter() - start_time
-            health.recent_latencies.append(latency)
-            health.recent_latencies = health.recent_latencies[-20:]
-            self._record_result(health, succeeded=True)
-            health.consecutive_failures = 0
-            health.status = "healthy" if health.error_rate < 0.5 else "degraded"
+            self._apply_outcome(
+                health,
+                succeeded=True,
+                latency=perf_counter() - start_time,
+            )
 
-        health.last_check_time = datetime.now(timezone.utc)
         return health
 
-    async def start_background_checks(self, interval_seconds: int = 30) -> None:
+    def record_request_outcome(
+        self,
+        provider_name: str,
+        succeeded: bool,
+        latency: float | None = None,
+    ) -> None:
+        """Fold a real request's outcome into provider health.
+
+        Passive health checking. A real request is a strictly better health signal than a
+        synthetic probe — it reflects the traffic that actually matters, and it costs no
+        provider quota — so the gateway learns provider health as a side effect of serving
+        requests rather than by spending requests to ask.
+        """
+        health = self.provider_health.setdefault(provider_name, ProviderHealth())
+        self._apply_outcome(health, succeeded=succeeded, latency=latency)
+
+    def should_probe(
+        self,
+        provider_name: str,
+        circuit_breaker: Any = None,
+    ) -> bool:
+        """Decide whether a provider needs a synthetic probe.
+
+        Probing is the expensive path: every probe spends real provider quota, and on a
+        metered free tier a fixed-interval probe loop will exhaust the daily allowance on
+        its own — a monitor that consumes the capacity it exists to protect. So a probe is
+        only worth spending when there is no cheaper signal available:
+
+        * the provider has never been seen, so there is no health data at all; or
+        * its circuit is not closed, so we need to know when it recovers and real traffic
+          is being withheld from it.
+
+        A provider that is closed and serving traffic already reports its own health for
+        free through ``record_request_outcome``.
+        """
+        health = self.provider_health.get(provider_name)
+        if health is None or health.status == "unknown":
+            return True
+
+        if circuit_breaker is not None:
+            return circuit_breaker.get_state(provider_name) != "closed"
+
+        return False
+
+    async def start_background_checks(
+        self,
+        interval_seconds: int = 30,
+        circuit_breaker: Any = None,
+    ) -> None:
+        """Probe only the providers that need probing, on a fixed interval.
+
+        Passing ``circuit_breaker`` enables the quota-aware policy in ``should_probe``.
+        Omitting it falls back to probing every provider every interval, which is the
+        original behaviour and is only appropriate against providers with no meaningful
+        request quota.
+        """
         while True:
+            due = [
+                provider_name
+                for provider_name in self.providers
+                if self.should_probe(provider_name, circuit_breaker)
+            ]
             checks = [
                 asyncio.create_task(self.check_provider_health(provider_name))
-                for provider_name in self.providers
+                for provider_name in due
             ]
             if checks:
                 await asyncio.gather(*checks, return_exceptions=True)
@@ -91,6 +143,32 @@ class HealthMonitor:
         if health is None:
             return "unknown"
         return health.status
+
+    def _apply_outcome(
+        self,
+        health: ProviderHealth,
+        succeeded: bool,
+        latency: float | None = None,
+    ) -> None:
+        """Apply one observation, from a probe or from real traffic, identically."""
+        self._record_result(health, succeeded=succeeded)
+
+        if succeeded:
+            health.consecutive_failures = 0
+            if latency is not None:
+                health.recent_latencies.append(latency)
+                health.recent_latencies = health.recent_latencies[-20:]
+        else:
+            health.consecutive_failures += 1
+
+        if health.consecutive_failures >= 4:
+            health.status = "down"
+        elif health.consecutive_failures >= 2:
+            health.status = "degraded"
+        else:
+            health.status = "healthy" if health.error_rate < 0.5 else "degraded"
+
+        health.last_check_time = datetime.now(timezone.utc)
 
     def _record_result(self, health: ProviderHealth, succeeded: bool) -> None:
         health.recent_results.append(succeeded)

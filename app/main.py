@@ -19,7 +19,11 @@ from app.budget import (
     reserve_budget,
 )
 from app.circuit_breaker import CircuitBreaker
-from app.config import load_model_catalog, load_teams_config
+from app.config import (
+    HEALTH_CHECK_INTERVAL_SECONDS,
+    load_model_catalog,
+    load_teams_config,
+)
 from app.health import HealthMonitor
 from app.metrics import (
     CIRCUIT_BREAKER_STATE as gateway_circuit_breaker_state,
@@ -63,7 +67,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.providers = providers
     app.state.circuit_breaker = circuit_breaker
     app.state.health_check_task = asyncio.create_task(
-        health_monitor.start_background_checks(interval_seconds=10)
+        health_monitor.start_background_checks(
+            interval_seconds=HEALTH_CHECK_INTERVAL_SECONDS,
+            circuit_breaker=circuit_breaker,
+        )
     )
     try:
         yield
@@ -303,10 +310,11 @@ async def call_chat_with_fallback(
         try:
             provider_response = await call_with_retry(provider, request)
         except Exception as exc:
+            elapsed = time.perf_counter() - started_at
             REQUEST_DURATION_SECONDS.labels(
                 team_id=team_id,
                 provider=provider_name,
-            ).observe(time.perf_counter() - started_at)
+            ).observe(elapsed)
             ERRORS_TOTAL.labels(
                 team_id=team_id,
                 provider=provider_name,
@@ -314,13 +322,21 @@ async def call_chat_with_fallback(
             ).inc()
             last_exception = exc
             circuit_breaker.record_failure(provider_name)
+            # Real traffic is the cheapest health signal there is, so feed it back.
+            health_monitor.record_request_outcome(provider_name, succeeded=False)
             continue
 
+        elapsed = time.perf_counter() - started_at
         REQUEST_DURATION_SECONDS.labels(
             team_id=team_id,
             provider=provider_name,
-        ).observe(time.perf_counter() - started_at)
+        ).observe(elapsed)
         circuit_breaker.record_success(provider_name)
+        health_monitor.record_request_outcome(
+            provider_name,
+            succeeded=True,
+            latency=elapsed,
+        )
         if first_priority_provider and provider_name != first_priority_provider:
             FALLBACK_TRIGGERED_TOTAL.labels(
                 team_id=team_id,
