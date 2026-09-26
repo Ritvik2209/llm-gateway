@@ -149,9 +149,9 @@ pip install -r requirements.txt
 pytest
 ```
 
-**83 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**85 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
-Twelve of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
+Fourteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
 ## Load Test Results
 
@@ -192,7 +192,9 @@ The **LLM Gateway Overview** dashboard (`monitoring/grafana/dashboards/llm-gatew
      this image reference is currently a placeholder and will render broken until that file exists. -->
 ![Grafana Dashboard](docs/grafana-dashboard.png)
 
-Exported metrics: `gateway_requests_total`, `gateway_request_duration_seconds`, `gateway_errors_total`, `gateway_fallback_triggered_total`, `gateway_circuit_breaker_state`, `gateway_tokens_total`.
+Exported metrics: `gateway_requests_total`, `gateway_request_duration_seconds`, `gateway_errors_total` (labelled by failure class), `gateway_fallback_triggered_total`, `gateway_circuit_breaker_state`, `gateway_tokens_total`, `gateway_cost_usd_total`, `gateway_team_spend_usd`, `gateway_team_budget_usd`.
+
+Cost is a counter, so spend over any window is a query rather than another metric — `sum(increase(gateway_cost_usd_total[1d])) by (team_id)` gives cost per team per day. Budget utilisation comes from the two gauges, which mirror the authoritative Redis state and are seeded at startup so a restarted gateway does not appear to have reset every budget: `100 * gateway_team_spend_usd / gateway_team_budget_usd`.
 
 ## Known Limitations
 

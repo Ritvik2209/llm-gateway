@@ -13,6 +13,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from app.auth import verify_admin_key, verify_api_key
 from app.budget import (
     calculate_cost,
+    get_current_spend,
     estimate_max_cost,
     reconcile_spend,
     release_reservation,
@@ -27,10 +28,13 @@ from app.config import (
 from app.health import HealthMonitor
 from app.metrics import (
     CIRCUIT_BREAKER_STATE as gateway_circuit_breaker_state,
+    COST_USD_TOTAL,
     ERRORS_TOTAL,
     FALLBACK_TRIGGERED_TOTAL,
     REQUEST_DURATION_SECONDS,
     REQUESTS_TOTAL,
+    TEAM_BUDGET_USD,
+    TEAM_SPEND_USD,
     TOKENS_TOTAL,
 )
 from app.models.schemas import ChatMessage, UnifiedChatRequest, UnifiedChatResponse
@@ -57,6 +61,27 @@ health_monitor = HealthMonitor()
 circuit_breaker = CircuitBreaker()
 
 
+async def initialise_budget_gauges() -> None:
+    """Publish each team's cap and current spend at startup.
+
+    Without this the utilisation gauges read zero until a team's first request, which
+    would make a restarted gateway look like every budget had been reset.
+    """
+    for team_config in app.state.teams_config.values():
+        team_id = team_config["team_id"]
+        TEAM_BUDGET_USD.labels(team_id=team_id).set(
+            team_config.get("monthly_budget_usd", 0.0)
+        )
+        try:
+            TEAM_SPEND_USD.labels(team_id=team_id).set(
+                await get_current_spend(team_id, app.state.redis_client)
+            )
+        except Exception as exc:
+            # Redis being unreachable at startup must not stop the gateway from serving;
+            # the gauge will be corrected by the team's first request.
+            logger.warning("Could not read initial spend for %s: %s", team_id, exc)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     health_monitor.register_provider(ollama_provider, health_check_model="llama3.2")
@@ -67,6 +92,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.health_monitor = health_monitor
     app.state.providers = providers
     app.state.circuit_breaker = circuit_breaker
+    await initialise_budget_gauges()
     app.state.health_check_task = asyncio.create_task(
         health_monitor.start_background_checks(
             interval_seconds=HEALTH_CHECK_INTERVAL_SECONDS,
@@ -137,6 +163,26 @@ async def toggle_mock_failure(
     """Toggle mock provider failure mode for local health monitor testing."""
     mock_provider.should_fail = not mock_provider.should_fail
     return {"should_fail": mock_provider.should_fail}
+
+
+def record_cost(
+    team_id: str,
+    provider_name: str,
+    model: str,
+    cost: float,
+    team_spend: float,
+) -> None:
+    """Export what a request cost, and where the team now stands against its cap.
+
+    Cost was already computed for budget accounting but never left Redis, so spend was
+    invisible to the metrics stack and no dashboard could show it.
+    """
+    COST_USD_TOTAL.labels(
+        team_id=team_id,
+        provider=provider_name,
+        model=model,
+    ).inc(cost)
+    TEAM_SPEND_USD.labels(team_id=team_id).set(team_spend)
 
 
 def enrich_request_with_team_system_prompt(
@@ -552,11 +598,18 @@ async def chat(
                     input_tokens=stream_usage["input_tokens"],
                     output_tokens=stream_usage["output_tokens"],
                 )
-                await reconcile_spend(
+                team_spend = await reconcile_spend(
                     team_id=team_id,
                     reserved_usd=budget_reservation,
                     actual_usd=cost,
                     redis_client=app.state.redis_client,
+                )
+                record_cost(
+                    team_id=team_id,
+                    provider_name=selected_provider_name,
+                    model=request.model,
+                    cost=cost,
+                    team_spend=team_spend,
                 )
                 REQUESTS_TOTAL.labels(
                     team_id=team_id,
@@ -612,11 +665,18 @@ async def chat(
             input_tokens=provider_response.input_tokens,
             output_tokens=provider_response.output_tokens,
         )
-        await reconcile_spend(
+        team_spend = await reconcile_spend(
             team_id=team_id,
             reserved_usd=budget_reservation,
             actual_usd=cost,
             redis_client=app.state.redis_client,
+        )
+        record_cost(
+            team_id=team_id,
+            provider_name=provider_response.provider,
+            model=request.model,
+            cost=cost,
+            team_spend=team_spend,
         )
         REQUESTS_TOTAL.labels(
             team_id=team_id,

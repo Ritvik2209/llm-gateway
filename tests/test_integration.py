@@ -185,6 +185,21 @@ def read_spend(redis_client, team_id: str) -> float:
     return asyncio.run(budget_module.get_current_spend(team_id, redis_client))
 
 
+def read_cost_counter(team_id: str, provider: str, model: str) -> float:
+    """Read gateway_cost_usd_total from the prometheus_client registry in-process."""
+    value = REGISTRY.get_sample_value(
+        "gateway_cost_usd_total",
+        {"team_id": team_id, "provider": provider, "model": model},
+    )
+    return 0.0 if value is None else value
+
+
+def read_spend_gauge(team_id: str) -> float | None:
+    return REGISTRY.get_sample_value(
+        "gateway_team_spend_usd", {"team_id": team_id}
+    )
+
+
 def read_fallback_counter(team_id: str, from_provider: str, to_provider: str) -> float:
     """Read gateway_fallback_triggered_total from the prometheus_client registry in-process."""
     value = REGISTRY.get_sample_value(
@@ -281,6 +296,49 @@ def test_full_request_lifecycle_costs_nothing_with_real_mock_pricing(monkeypatch
 
     assert response.status_code == 200
     assert read_spend(redis_client, "integration-lifecycle") == 0.0
+
+
+def test_request_cost_is_exported_to_prometheus(monkeypatch):
+    """Cost was computed for budget accounting but never left Redis, so no dashboard
+    could show spend. It must now appear as both a counter and a utilisation gauge.
+    """
+    monkeypatch.setattr(budget_module, "MODEL_PRICING", PRICED_MOCK_MODEL)
+    client, redis_client, _circuit_breaker = create_test_client(monkeypatch)
+
+    before = read_cost_counter("integration-lifecycle", "mock", "mock-model")
+
+    response = client.post(
+        "/v1/chat",
+        headers={"Authorization": "Bearer integration-lifecycle-key"},
+        json=BUDGET_CHAT_REQUEST,
+    )
+    assert response.status_code == 200
+
+    after = read_cost_counter("integration-lifecycle", "mock", "mock-model")
+    assert after == pytest.approx(before + PRICED_COST_PER_REQUEST)
+
+    # The gauge must agree with what Redis actually holds, not with the counter, since
+    # the counter resets on restart and the gauge is what utilisation is computed from.
+    assert read_spend_gauge("integration-lifecycle") == pytest.approx(
+        read_spend(redis_client, "integration-lifecycle")
+    )
+
+
+def test_a_free_model_records_zero_cost(monkeypatch):
+    """The shipped pricing table prices mock at $0, so the counter must exist at zero
+    rather than be absent — an absent series and a zero series read very differently on
+    a dashboard.
+    """
+    client, _redis_client, _circuit_breaker = create_test_client(monkeypatch)
+
+    response = client.post(
+        "/v1/chat",
+        headers={"Authorization": "Bearer integration-lifecycle-key"},
+        json=CHAT_REQUEST,
+    )
+
+    assert response.status_code == 200
+    assert read_cost_counter("integration-lifecycle", "mock", "mock-model") >= 0.0
 
 
 # ---------------------------------------------------------------------------

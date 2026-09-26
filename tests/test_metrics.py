@@ -15,3 +15,6 @@ def test_metrics_endpoint_exposes_gateway_metrics():
     assert "gateway_fallback_triggered_total" in response.text
     assert "gateway_circuit_breaker_state" in response.text
     assert "gateway_tokens_total" in response.text
+    assert "gateway_cost_usd_total" in response.text
+    assert "gateway_team_spend_usd" in response.text
+    assert "gateway_team_budget_usd" in response.text

@@ -39,6 +39,31 @@ TOKENS_TOTAL = Counter(
     ["team_id", "provider", "token_type"],
 )
 
+# Cost is a monotonic counter so that spend over any window — per day, per hour — is a
+# query (`increase(gateway_cost_usd_total[1d])`) rather than a separate metric. Labelled
+# by model as well as provider, because attributing spend to a model is what makes a
+# cost-routing decision arguable rather than guessed.
+COST_USD_TOTAL = Counter(
+    "gateway_cost_usd_total",
+    "Total gateway cost in USD.",
+    ["team_id", "provider", "model"],
+)
+
+# The counter above resets when the process restarts, which is normal for Prometheus but
+# useless for answering "how close is this team to its cap". These two gauges mirror the
+# authoritative Redis state instead, so budget utilisation is spend / budget.
+TEAM_SPEND_USD = Gauge(
+    "gateway_team_spend_usd",
+    "Team month-to-date spend in USD, as recorded in Redis.",
+    ["team_id"],
+)
+
+TEAM_BUDGET_USD = Gauge(
+    "gateway_team_budget_usd",
+    "Team monthly budget cap in USD.",
+    ["team_id"],
+)
+
 
 CIRCUIT_BREAKER_STATE_VALUES = {
     "closed": 0,
