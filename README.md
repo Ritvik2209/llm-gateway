@@ -152,6 +152,23 @@ for the mock provider.
 
 To exercise a real provider, use the `team-alpha` key (`demo-team-alpha-local-only`), whose priority chain is `groq → ollama → mock` and which is configured with a system prompt that forces French replies. The demo keys in `config/teams.yaml` are local-only placeholders, not secrets; replace them before running this anywhere real.
 
+## Demo
+
+With the stack running, `scripts/demo.py` exercises every behaviour end to end against the
+live gateway — tiers and failover, capability routing, both rate-limit dimensions, budget
+enforcement, retry classification, circuit-breaker transitions, the admin API, validated
+hot reload, and the cost and health metrics:
+
+```bash
+docker-compose up -d --build
+python scripts/demo.py          # 34 checks
+```
+
+Each section states what it is proving, shows the real request and response, and asserts
+the outcome, so a regression fails loudly rather than printing something plausible. It is
+idempotent — it waits out a circuit-breaker cooldown left by a previous run rather than
+mismeasuring it — and it restores `config/teams.yaml` byte-for-byte before exiting.
+
 ## Testing
 
 ```bash
@@ -215,6 +232,7 @@ These were found by testing the running system, and are documented rather than p
 - **The mock provider would return fabricated content as HTTP 200 if a team allowed it.** It is excluded from every real team's chain and blocked by allowlist enforcement, so this is closed by configuration rather than by construction — a team that explicitly allows `mock` can still receive `"mock response"` with a success status.
 - **The mock provider is priced at $0.00**, so mock traffic never accumulates spend and budget caps cannot be exercised against it without overriding the pricing table in tests.
 - **Only limits are runtime-editable.** Onboarding a team, rotating a key or changing an allowlist still means editing YAML by hand: the admin API deliberately refuses anything but the three numeric limits, since an endpoint that can grant `is_admin` or widen an allowlist is a privilege-escalation path. API keys remain plaintext with no rotation or expiry.
+- **Reverting a limit does not restore the file byte-for-byte.** Values written by the admin API round-trip through a Python float, so restoring `5.00` writes `5.0`. Semantically identical, but a revert is not a textual no-op. Holding money as integer micro-dollars would fix this and the float-epsilon issue together.
 - **The audit trail is not durable.** Entries go to stdout and to a capped Redis list, but Redis has no volume, so the queryable copy is lost if the container is removed.
 - **Only the non-streaming provider paths are classified.** `chat_stream` still raises untyped errors, and a mid-stream failure feeds neither the circuit breaker nor the health monitor, so streaming failures are invisible to both.
 - **Health status is still decoupled from routing.** Provider health is now accurate and cheap to collect, but `get_provider_candidates` still does not read it — only circuit-breaker state gates a provider. A probe that detects recovery does not close the circuit; that still requires a real request after the cooldown.
