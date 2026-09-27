@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from app.models.catalog import ModelCatalog
 from dotenv import load_dotenv
 
 
@@ -40,21 +42,48 @@ MODEL_PRICING = {
 }
 
 
-def load_model_catalog(path: str = "config/models.yaml") -> dict[str, set[str]]:
-    """Load the map of which physical models each provider can serve.
+def load_model_catalog(path: str = "config/models.yaml") -> ModelCatalog:
+    """Load which physical models each provider serves, and the logical tiers.
 
     Routing uses this to skip providers that cannot serve the requested model at all,
-    instead of discovering that fact by failing. A provider missing from the catalog
-    serves nothing, keeping the check fail-closed like the provider allowlist.
+    instead of discovering that fact by failing. A provider missing from the catalog serves
+    nothing, keeping the check fail-closed like the provider allowlist.
+
+    Tiers are validated on load: a tier that names an unknown provider, or maps a provider
+    to a model that provider does not serve, is a configuration error that would surface at
+    request time as an unexplained 404 from the provider. Rejecting it here means the
+    validated-reload path refuses it and the previous catalog keeps serving.
     """
     config_path = Path(path)
     with config_path.open("r", encoding="utf-8") as catalog_file:
         raw_catalog = yaml.safe_load(catalog_file) or {}
 
-    return {
+    providers = {
         provider_name: set(models or [])
         for provider_name, models in (raw_catalog.get("providers") or {}).items()
     }
+
+    tiers: dict[str, dict[str, str]] = {}
+    for tier_name, mapping in (raw_catalog.get("tiers") or {}).items():
+        if tier_name in providers:
+            raise ValueError(
+                f'Tier "{tier_name}" collides with a provider name.'
+            )
+        resolved: dict[str, str] = {}
+        for provider_name, physical_model in (mapping or {}).items():
+            if provider_name not in providers:
+                raise ValueError(
+                    f'Tier "{tier_name}" names unknown provider "{provider_name}".'
+                )
+            if physical_model not in providers[provider_name]:
+                raise ValueError(
+                    f'Tier "{tier_name}" maps "{provider_name}" to "{physical_model}", '
+                    f"which that provider does not serve."
+                )
+            resolved[provider_name] = physical_model
+        tiers[tier_name] = resolved
+
+    return ModelCatalog(providers=providers, tiers=tiers)
 
 
 def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, Any]]:

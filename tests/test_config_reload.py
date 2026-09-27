@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app import config as config_module
 from app import main as main_module
+from app.models.catalog import ModelCatalog
 
 
 ADMIN_TEAMS = {
@@ -74,7 +75,7 @@ async def test_reload_applies_a_valid_edit(monkeypatch, tmp_path):
     teams_path, models_path = write_config(tmp_path)
     point_gateway_at(monkeypatch, teams_path, models_path)
     monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(main_module.app.state, "model_catalog", {})
+    monkeypatch.setattr(main_module.app.state, "model_catalog", ModelCatalog())
 
     result = await main_module.reload_configuration()
 
@@ -83,7 +84,7 @@ async def test_reload_applies_a_valid_edit(monkeypatch, tmp_path):
     reloaded = main_module.app.state.teams_config["reloaded-key"]
     assert reloaded["requests_per_minute"] == 7
     assert reloaded["tokens_per_minute"] == 700
-    assert main_module.app.state.model_catalog == {"mock": {"mock-model"}}
+    assert main_module.app.state.model_catalog.providers == {"mock": {"mock-model"}}
 
 
 @pytest.mark.asyncio
@@ -94,14 +95,18 @@ async def test_a_malformed_edit_is_rejected_and_the_previous_config_survives(
     teams_path, models_path = write_config(tmp_path, teams_yaml=MALFORMED_TEAMS_YAML)
     point_gateway_at(monkeypatch, teams_path, models_path)
     monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(main_module.app.state, "model_catalog", {"mock": {"mock-model"}})
+    monkeypatch.setattr(
+        main_module.app.state,
+        "model_catalog",
+        ModelCatalog(providers={"mock": {"mock-model"}}),
+    )
 
     with pytest.raises(main_module.ConfigReloadError):
         await main_module.reload_configuration()
 
     # Untouched: the gateway is still serving the configuration it had.
     assert main_module.app.state.teams_config == ADMIN_TEAMS
-    assert main_module.app.state.model_catalog == {"mock": {"mock-model"}}
+    assert main_module.app.state.model_catalog.providers == {"mock": {"mock-model"}}
 
 
 @pytest.mark.asyncio
@@ -127,7 +132,7 @@ async def test_config_is_replaced_not_mutated(monkeypatch, tmp_path):
     point_gateway_at(monkeypatch, teams_path, models_path)
     original = dict(ADMIN_TEAMS)
     monkeypatch.setattr(main_module.app.state, "teams_config", original)
-    monkeypatch.setattr(main_module.app.state, "model_catalog", {})
+    monkeypatch.setattr(main_module.app.state, "model_catalog", ModelCatalog())
 
     await main_module.reload_configuration()
 
@@ -153,7 +158,7 @@ def test_reload_endpoint_applies_an_edit(monkeypatch, tmp_path):
     teams_path, models_path = write_config(tmp_path)
     point_gateway_at(monkeypatch, teams_path, models_path)
     monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(main_module.app.state, "model_catalog", {})
+    monkeypatch.setattr(main_module.app.state, "model_catalog", ModelCatalog())
     client = TestClient(main_module.app)
 
     response = client.post(
@@ -185,7 +190,11 @@ def test_reload_endpoint_reports_a_rejected_edit_as_409(monkeypatch, tmp_path):
 
 def test_config_endpoint_reports_what_is_in_effect(monkeypatch):
     monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(main_module.app.state, "model_catalog", {"mock": {"mock-model"}})
+    monkeypatch.setattr(
+        main_module.app.state,
+        "model_catalog",
+        ModelCatalog(providers={"mock": {"mock-model"}}),
+    )
     client = TestClient(main_module.app)
 
     response = client.get(

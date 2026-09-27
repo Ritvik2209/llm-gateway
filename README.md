@@ -9,7 +9,7 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 ## Features
 
 - **Multi-provider routing** across three implemented providers: **Ollama** (local models), **Groq** (hosted inference), and a built-in **Mock** provider for deterministic testing.
-- **Capability-aware routing and failover** — a model catalog (`config/models.yaml`) declares which models each provider serves, so a provider that cannot serve the request is skipped rather than attempted and failed. Remaining candidates are tried in the team's priority order, and a per-provider circuit breaker stops hammering a provider that is already failing.
+- **Logical model tiers with real failover** — `config/models.yaml` declares which models each provider serves, plus tiers that resolve one logical name to a *different physical model per provider* (`chat-general` is `openai/gpt-oss-20b` on Groq and `llama3.2` on Ollama). That is what lets a fallback chain cross providers serving disjoint model sets. Callers may still name a physical model directly. A provider that cannot serve the request is skipped rather than attempted and failed, and a per-provider circuit breaker stops hammering one that is already failing.
 - **Redis-backed rate limiting on two dimensions** — requests per minute and tokens per minute — over a sliding 60-second window. Both limits are evaluated in a single Lua script, so a request rejected on tokens does not consume a request slot. Rejections name which limit was hit.
 - **Redis-backed budget enforcement** with a monthly per-team spend cap. Each request's worst-case cost is reserved atomically *before* the provider call and reconciled against actual usage afterwards, so the cap is a hard limit even under concurrency. An 80% crossing sets a warning header.
 - **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, token rate, and monthly budget.
@@ -40,25 +40,27 @@ Rate limiting           requests + tokens, sliding 60s        429 + Retry-After
 Budget reservation      reserve worst-case cost atomically    402 if it will not fit
   │                     ≥80% → X-Budget-Warning header
   ▼
-Provider selection      allowlist → model catalog → circuit   503 if none available
+Provider selection      allowlist → tier/catalog → circuit    503 if none available
   │                     retry w/ backoff, fall through on failure
   ▼
 Response + accounting   reconcile reservation vs actual usage
 ```
 
-Provider selection filters the team's `provider_priority` list in three stages — the team's provider allowlist, whether the provider serves the requested model, then whether its circuit will accept an attempt — and falls through to the next candidate on failure:
+Provider selection filters the team's `provider_priority` list in three stages, each answering a different question — *may* this team use the provider (allowlist), *can* it serve this request (model catalog or tier), *should* we attempt it now (circuit breaker) — and falls through to the next candidate on failure. Each candidate carries its own physical model, so one tier request can be served by providers that host different models:
 
 ```
-team-alpha: provider_priority = [ groq, ollama, mock ]
+request: model = "chat-general"       team-alpha priority = [ groq, ollama ]
 
-   ┌────────┐  fails   ┌────────┐  fails   ┌────────┐
-   │  groq  │ ───────▶ │ ollama │ ───────▶ │  mock  │
-   └────────┘          └────────┘          └────────┘
-        │                   │                   │
-        └───── success ─────┴─── success ───────┘
-                            │
-                            ▼
-              response.provider = whichever served it
+   ┌──────────────────────────┐  fails   ┌──────────────────────┐
+   │ groq                     │ ───────▶ │ ollama               │
+   │ openai/gpt-oss-20b       │          │ llama3.2             │
+   └──────────────────────────┘          └──────────────────────┘
+              │                                     │
+              └────────────── success ──────────────┘
+                              │
+                              ▼
+        response.model    = the physical model that ran
+        response.provider = whichever served it
 ```
 
 Each provider has an independent circuit breaker (`app/circuit_breaker.py`):
@@ -157,7 +159,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-**127 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**140 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
 
 Sixteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 

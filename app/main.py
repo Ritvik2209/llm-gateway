@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, NamedTuple
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
@@ -53,6 +53,7 @@ from app.metrics import (
     TEAM_SPEND_USD,
     TOKENS_TOTAL,
 )
+from app.models.catalog import ModelCatalog
 from app.models.schemas import ChatMessage, UnifiedChatRequest, UnifiedChatResponse
 from app.providers.base import LLMProvider
 from app.providers.errors import ProviderError
@@ -121,7 +122,8 @@ async def reload_configuration() -> dict[str, Any]:
     logger.info("Configuration reloaded: %s teams", len(teams_config))
     return {
         "teams": len(teams_config),
-        "providers_in_catalog": len(model_catalog),
+        "providers_in_catalog": len(model_catalog.providers),
+        "model_tiers": len(model_catalog.tiers),
         "loaded_at": app.state.config_loaded_at.isoformat(),
     }
 
@@ -297,7 +299,11 @@ async def admin_config(
         ),
         "model_catalog": {
             provider_name: sorted(models)
-            for provider_name, models in app.state.model_catalog.items()
+            for provider_name, models in app.state.model_catalog.providers.items()
+        },
+        "model_tiers": {
+            tier_name: dict(mapping)
+            for tier_name, mapping in app.state.model_catalog.tiers.items()
         },
     }
 
@@ -552,7 +558,7 @@ def select_provider(
     providers: dict[str, LLMProvider],
     circuit_breaker: CircuitBreaker | None = None,
     model: str | None = None,
-    model_catalog: dict[str, set[str]] | None = None,
+    model_catalog: ModelCatalog | None = None,
 ) -> LLMProvider:
     """Select the best available provider from the team's priority order."""
     candidates = get_provider_candidates(
@@ -564,7 +570,7 @@ def select_provider(
         model_catalog=model_catalog,
     )
     if candidates:
-        return candidates[0][1]
+        return candidates[0].provider
 
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -575,7 +581,7 @@ def select_provider(
 def describe_unavailability(
     team_config: dict[str, Any],
     model: str | None = None,
-    model_catalog: dict[str, set[str]] | None = None,
+    model_catalog: ModelCatalog | None = None,
 ) -> str:
     """Explain why no provider is available, separating config from availability.
 
@@ -589,10 +595,11 @@ def describe_unavailability(
         return "No healthy providers available. Attempted providers: none."
 
     if model is not None and model_catalog is not None:
+        resolution = model_catalog.resolve(model)
         capable_providers = [
             provider_name
             for provider_name in provider_priority
-            if model in model_catalog.get(provider_name, set())
+            if provider_name in resolution
         ]
         if not capable_providers:
             return (
@@ -607,20 +614,34 @@ def describe_unavailability(
     )
 
 
+class ProviderCandidate(NamedTuple):
+    """A provider that may serve this request, and the model to ask it for.
+
+    ``model`` is the *physical* model name. For a tier request it differs per provider,
+    which is precisely what lets one logical name fall back across providers that serve
+    different models.
+    """
+
+    name: str
+    provider: LLMProvider
+    model: str
+
+
 def get_provider_candidates(
     team_config: dict[str, Any],
     health_monitor: HealthMonitor,
     providers: dict[str, LLMProvider],
     circuit_breaker: CircuitBreaker | None = None,
     model: str | None = None,
-    model_catalog: dict[str, set[str]] | None = None,
-) -> list[tuple[str, LLMProvider]]:
+    model_catalog: ModelCatalog | None = None,
+) -> list[ProviderCandidate]:
     """Return provider candidates ordered by circuit state and team priority.
 
-    Candidates are filtered in three stages: the team's provider allowlist, whether the
-    provider can serve the requested model, and whether its circuit will accept an
-    attempt. The middle stage matters because a provider that does not host the model
-    cannot succeed no matter how many times it is retried.
+    Candidates are filtered in three stages, each answering a different question: the
+    team's provider allowlist (*may* this team use it), the model catalog (*can* it serve
+    this request), and the circuit breaker (*should* we attempt it now). The middle stage
+    matters because a provider that does not host the model cannot succeed no matter how
+    many times it is retried.
 
     ``model`` and ``model_catalog`` are optional so that tests can exercise priority and
     circuit logic in isolation; the request path always supplies both.
@@ -630,18 +651,28 @@ def get_provider_candidates(
         provider_name for provider_name in provider_priority if provider_name in providers
     ]
 
+    resolution: dict[str, str] = {}
     if model is not None and model_catalog is not None:
+        resolution = model_catalog.resolve(model)
         attempted_providers = [
             provider_name
             for provider_name in attempted_providers
-            if model in model_catalog.get(provider_name, set())
+            if provider_name in resolution
         ]
-    candidates: list[tuple[str, LLMProvider]] = []
+    candidates: list[ProviderCandidate] = []
 
     for provider_name in attempted_providers:
         if circuit_breaker and not circuit_breaker.can_attempt(provider_name):
             continue
-        candidates.append((provider_name, providers[provider_name]))
+        candidates.append(
+            ProviderCandidate(
+                name=provider_name,
+                provider=providers[provider_name],
+                # Falls back to the requested name when no catalog was supplied, which is
+                # the isolated-test path.
+                model=resolution.get(provider_name, model or ""),
+            )
+        )
 
     return candidates
 
@@ -658,7 +689,7 @@ async def call_chat_with_fallback(
     health_monitor: HealthMonitor,
     circuit_breaker: CircuitBreaker,
     providers: dict[str, LLMProvider],
-    model_catalog: dict[str, set[str]] | None = None,
+    model_catalog: ModelCatalog | None = None,
 ) -> UnifiedChatResponse:
     """Call providers in fallback order, recording circuit breaker outcomes."""
     candidates = get_provider_candidates(
@@ -673,10 +704,13 @@ async def call_chat_with_fallback(
     team_id = team_config["team_id"]
     first_priority_provider = get_first_priority_provider(team_config)
 
-    for provider_name, provider in candidates:
+    for provider_name, provider, physical_model in candidates:
         started_at = time.perf_counter()
+        # Each candidate may serve a different physical model for the same logical tier,
+        # so the outbound request is rebound per candidate rather than shared.
+        provider_request = request.model_copy(update={"model": physical_model})
         try:
-            provider_response = await call_with_retry(provider, request)
+            provider_response = await call_with_retry(provider, provider_request)
         except Exception as exc:
             elapsed = time.perf_counter() - started_at
             REQUEST_DURATION_SECONDS.labels(
@@ -793,6 +827,10 @@ async def chat(
                 model=request.model,
                 messages=request.messages,
                 max_output_tokens=request.max_tokens,
+                candidate_models=app.state.model_catalog.physical_models_for(
+                    request.model
+                )
+                or None,
             )
         except ValueError as exc:
             # An unpriced model cannot be metered, so serving it would mean abandoning
@@ -845,8 +883,11 @@ async def chat(
             model=request.model,
             model_catalog=app.state.model_catalog,
         )
+        selected_model = request.model
         if selected_candidates:
-            selected_provider_name, selected_provider = selected_candidates[0]
+            selected_provider_name, selected_provider, selected_model = (
+                selected_candidates[0]
+            )
         else:
             selected_provider = select_provider(
                 team_config,
@@ -860,6 +901,9 @@ async def chat(
                 provider_name
                 for provider_name, provider in runtime_providers.items()
                 if provider is selected_provider
+            )
+            selected_model = app.state.model_catalog.resolve(request.model).get(
+                selected_provider_name, request.model
             )
         request_provider = selected_provider_name
 
@@ -876,7 +920,9 @@ async def chat(
                 chunks: list[str] = []
                 started_at = time.perf_counter()
                 try:
-                    async for chunk in selected_provider.chat_stream(request):
+                    async for chunk in selected_provider.chat_stream(
+                        request.model_copy(update={"model": selected_model})
+                    ):
                         chunks.append(chunk)
                         yield chunk
                 except Exception:
@@ -923,7 +969,7 @@ async def chat(
                     token_type="output",
                 ).inc(stream_usage["output_tokens"])
                 cost = calculate_cost(
-                    model=request.model,
+                    model=selected_model,
                     input_tokens=stream_usage["input_tokens"],
                     output_tokens=stream_usage["output_tokens"],
                 )
@@ -936,7 +982,7 @@ async def chat(
                 record_cost(
                     team_id=team_id,
                     provider_name=selected_provider_name,
-                    model=request.model,
+                    model=selected_model,
                     cost=cost,
                     team_spend=team_spend,
                 )
@@ -994,12 +1040,11 @@ async def chat(
             provider=provider_response.provider,
             token_type="output",
         ).inc(provider_response.output_tokens)
-        # Priced against the requested model, not the provider's echoed model name, so
-        # reservation and reconciliation always use the same pricing entry. The streaming
-        # path already did this; the two disagreeing meant a request could be reserved at
-        # one price and charged at another.
+        # Priced against the physical model that actually served the request. For a tier
+        # the requested name has no price of its own, and even for a direct request the
+        # billable unit is the model the provider ran.
         cost = calculate_cost(
-            model=request.model,
+            model=provider_response.model,
             input_tokens=provider_response.input_tokens,
             output_tokens=provider_response.output_tokens,
         )
@@ -1012,7 +1057,7 @@ async def chat(
         record_cost(
             team_id=team_id,
             provider_name=provider_response.provider,
-            model=request.model,
+            model=provider_response.model,
             cost=cost,
             team_spend=team_spend,
         )

@@ -26,6 +26,7 @@ from app import budget as budget_module
 from app import main as main_module
 from app.circuit_breaker import CircuitBreaker
 from app.config import MODEL_PRICING
+from app.models.catalog import ModelCatalog
 from app.models.schemas import UnifiedChatResponse
 from app.providers.errors import ProviderAuthError, ProviderRequestRejected
 from app.retry import call_with_retry as real_call_with_retry
@@ -104,11 +105,13 @@ TEAMS_CONFIG = {
 # that cannot serve the requested model is not a fallback for it. Declaring the overlap
 # here makes that precondition explicit, rather than relying on a stub provider that
 # accepts whatever model name it is handed.
-MODEL_CATALOG = {
-    "mock": {"mock-model"},
-    "ollama": {"mock-model", "llama3.2"},
-    "groq": {"openai/gpt-oss-20b"},
-}
+MODEL_CATALOG = ModelCatalog(
+    providers={
+        "mock": {"mock-model"},
+        "ollama": {"mock-model", "llama3.2"},
+        "groq": {"openai/gpt-oss-20b"},
+    },
+)
 
 # Mock responses report 10 input and 5 output tokens (app/providers/mock_provider.py:29-35).
 MOCK_INPUT_TOKENS = 10

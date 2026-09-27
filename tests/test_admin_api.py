@@ -17,6 +17,7 @@ from app.config_writer import (
     read_team_limits,
     update_team_limits,
 )
+from app.models.catalog import ModelCatalog
 from tests.fakes import FakeRedis
 
 
@@ -70,7 +71,11 @@ def build_environment(monkeypatch, tmp_path):
         "teams_config",
         main_module.load_teams_config(str(teams_path)),
     )
-    monkeypatch.setattr(main_module.app.state, "model_catalog", {"mock": {"mock-model"}})
+    monkeypatch.setattr(
+        main_module.app.state,
+        "model_catalog",
+        ModelCatalog(providers={"mock": {"mock-model"}}),
+    )
 
     return TestClient(main_module.app), redis_client, teams_path
 

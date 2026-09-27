@@ -51,18 +51,31 @@ def estimate_max_cost(
     model: str,
     messages: Iterable,
     max_output_tokens: int | None,
+    candidate_models: Iterable[str] | None = None,
 ) -> float:
     """Return an upper bound on what a request can cost.
 
     Output tokens are charged at the caller's ``max_tokens`` ceiling because that is the
-    most the provider can bill for. Reserving the worst case is what makes the cap a
-    hard limit: reserving a likely cost instead would let an unusually long completion
-    carry a team past its budget.
+    most the provider can bill for. Reserving the worst case is what makes the cap a hard
+    limit: reserving a likely cost instead would let an unusually long completion carry a
+    team past its budget.
+
+    When the request names a tier, the physical model — and so the price — is not known
+    until routing picks a provider. ``candidate_models`` lists every model the request
+    could end up billed against, and the most expensive one is reserved. Reserving the
+    cheapest, or the first, would let a fallback to a pricier provider breach the cap.
     """
-    return calculate_cost(
-        model=model,
-        input_tokens=estimate_input_tokens(messages),
-        output_tokens=max(0, max_output_tokens or 0),
+    models = list(candidate_models) if candidate_models else [model]
+    input_tokens = estimate_input_tokens(messages)
+    output_tokens = max(0, max_output_tokens or 0)
+
+    return max(
+        calculate_cost(
+            model=candidate,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        for candidate in models
     )
 
 

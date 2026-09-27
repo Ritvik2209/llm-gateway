@@ -4,7 +4,9 @@
 teams:
   - team_id: "team-alpha"
     api_key: "demo-team-alpha-local-only"
-    allowed_models: ["llama3.2", "openai/gpt-oss-20b"]
+    # "chat-general" is a tier: it resolves to gpt-oss-20b on Groq and llama3.2 on
+    # Ollama, so a Groq outage falls back to a provider that can actually serve it.
+    allowed_models: ["chat-general", "llama3.2", "openai/gpt-oss-20b"]
     allowed_providers: ["ollama", "groq"]
     provider_priority: ["groq", "ollama"]
     system_prompt: "You must always respond only in French, no matter what language the question is asked in."

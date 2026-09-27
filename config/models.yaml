@@ -19,3 +19,28 @@ providers:
   # it is declared narrowly here so it cannot stand in for a real model by accident.
   mock:
     - "mock-model"
+
+# Logical model tiers. A tier resolves to a different physical model per provider, which is
+# what lets one fallback chain cross providers that serve different models: without it the
+# providers in a chain serve disjoint model sets, so every provider after the first rejects
+# the request and the chain is decorative.
+#
+# A tier declares only the mapping, never the order. Ordering stays with each team's
+# provider_priority, so exactly one place decides which provider is preferred — during an
+# incident, "why did this request go there?" has a single answer.
+#
+# Requests may still name a physical model directly; that path is unchanged.
+tiers:
+  # Hosted first for latency, local as the free fallback. Measured: Groq P50 1.21s vs
+  # Ollama 2.88s, so falling back trades latency for availability at zero token cost.
+  chat-general:
+    groq: "openai/gpt-oss-20b"
+    ollama: "llama3.2"
+
+  # Local only, for traffic that must not leave the host.
+  chat-local:
+    ollama: "llama3.2"
+
+  # Test tier. Kept separate from the real ones so mock cannot serve production traffic.
+  chat-test:
+    mock: "mock-model"
