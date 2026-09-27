@@ -207,16 +207,32 @@ The practical conclusion is that gateway overhead is not worth optimizing until 
 
 Prometheus scrapes the gateway every 5 seconds (`monitoring/prometheus.yml`). Grafana is provisioned as code — datasource and dashboard are mounted at startup, so no manual setup is required. Grafana is at `http://localhost:3000`, Prometheus at `http://localhost:9090`.
 
-The **LLM Gateway Overview** dashboard (`monitoring/grafana/dashboards/llm-gateway-overview.json`) has five panels:
+Four dashboards are provisioned from `monitoring/grafana/dashboards/`, three of them
+purpose-built for a distinct question:
 
-1. **Request Rate by Provider**
-2. **Error Rate by Type**
-3. **P95 Latency by Provider**
-4. **Circuit Breaker State**
-5. **Token Throughput**
+| Dashboard | Answers |
+|---|---|
+| **Operations** | Is the gateway healthy and are providers behaving? Provider health, provider error rate, rejections by cause, fallback events, circuit-breaker state, config-reload outcomes |
+| **Business** | What is each team spending? Budget utilisation, month-to-date spend, spend rate by team and by model, token throughput |
+| **Performance** | How much latency does the gateway itself add? Gateway overhead, end-to-end and provider percentiles, per-provider latency, throughput |
+| **Overview** | An at-a-glance summary, kept as the quickest single view |
 
-<!-- TODO: screenshot not yet captured. Add a real Grafana screenshot at docs/grafana-dashboard.png;
-     this image reference is currently a placeholder and will render broken until that file exists. -->
+Three details are worth noting, because each is a way a dashboard commonly misleads:
+
+- **State reads as a word.** Provider health and circuit state are stat panels with value
+  mappings, so they show `degraded` or `open` rather than only a colour. Colour is a second
+  channel, never the only one.
+- **Zero is distinguishable from "no data".** A Prometheus counter that has never been
+  incremented has no series at all, so a naive panel renders "No data" where it should
+  render a reassuring `0`. The rejected-reload and provider-error-rate panels zero-fill
+  explicitly.
+- **Rejections are not provider failures.** Rate-limit, budget and unknown-model rejections
+  carry `provider="none"`, so the provider error rate excludes them from both the numerator
+  and the denominator. Otherwise the gateway's own policy decisions would be charged to a
+  provider that was never called.
+
+<!-- The screenshot below is of the Overview dashboard and predates the three purpose-built
+     boards above; retaking it from the Operations dashboard would show more. -->
 ![Grafana Dashboard](docs/grafana-dashboard.png)
 
 Exported metrics: `gateway_requests_total`, `gateway_request_duration_seconds`, `gateway_errors_total` (labelled by failure class), `gateway_fallback_triggered_total`, `gateway_circuit_breaker_state`, `gateway_tokens_total`, `gateway_cost_usd_total`, `gateway_team_spend_usd`, `gateway_team_budget_usd`.
