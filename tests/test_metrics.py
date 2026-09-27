@@ -19,3 +19,5 @@ def test_metrics_endpoint_exposes_gateway_metrics():
     assert "gateway_team_spend_usd" in response.text
     assert "gateway_team_budget_usd" in response.text
     assert "gateway_config_reloads_total" in response.text
+    assert "gateway_provider_health" in response.text
+    assert "gateway_request_total_duration_seconds" in response.text

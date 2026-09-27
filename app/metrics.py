@@ -15,6 +15,20 @@ REQUEST_DURATION_SECONDS = Histogram(
     ["team_id", "provider"],
 )
 
+# The histogram above wraps the provider call only, so it cannot answer "how much latency
+# does the gateway add" — during load testing it read 0.049s at P95 while clients saw
+# 0.302s, the difference being queueing it cannot see. This one covers the whole handler,
+# so gateway overhead is the difference between the two and the sub-10ms target becomes a
+# query rather than something only an external load tool can measure.
+#
+# For a streaming request this measures time to the response being returned, which is time
+# to first byte rather than time to completion.
+REQUEST_TOTAL_DURATION_SECONDS = Histogram(
+    "gateway_request_total_duration_seconds",
+    "End-to-end gateway request latency in seconds, including all policy checks.",
+    ["team_id", "status"],
+)
+
 ERRORS_TOTAL = Counter(
     "gateway_errors_total",
     "Total gateway errors.",
@@ -30,6 +44,16 @@ FALLBACK_TRIGGERED_TOTAL = Counter(
 CIRCUIT_BREAKER_STATE = Gauge(
     "gateway_circuit_breaker_state",
     "Circuit breaker state: 0 closed, 1 half_open, 2 open.",
+    ["provider_name"],
+)
+
+# Provider health existed only in the /admin/health JSON, so Prometheus — and therefore any
+# dashboard or alert — could not see it. Encoded higher-is-worse like the circuit breaker
+# gauge above, with -1 for a provider that has not been observed yet, so "not yet known" is
+# distinguishable from "healthy" rather than both reading as zero.
+PROVIDER_HEALTH_STATE = Gauge(
+    "gateway_provider_health",
+    "Provider health: -1 unknown, 0 healthy, 1 degraded, 2 down.",
     ["provider_name"],
 )
 
@@ -70,6 +94,21 @@ CIRCUIT_BREAKER_STATE_VALUES = {
     "half_open": 1,
     "open": 2,
 }
+
+
+PROVIDER_HEALTH_STATE_VALUES = {
+    "unknown": -1,
+    "healthy": 0,
+    "degraded": 1,
+    "down": 2,
+}
+
+
+def set_provider_health_state(provider_name: str, state: str) -> None:
+    """Publish a provider's health so alerts and dashboards can read it."""
+    PROVIDER_HEALTH_STATE.labels(provider_name=provider_name).set(
+        PROVIDER_HEALTH_STATE_VALUES.get(state, -1)
+    )
 
 
 def set_circuit_breaker_state(provider_name: str, state: str) -> None:

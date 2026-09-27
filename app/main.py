@@ -49,6 +49,7 @@ from app.metrics import (
     FALLBACK_TRIGGERED_TOTAL,
     REQUEST_DURATION_SECONDS,
     REQUESTS_TOTAL,
+    REQUEST_TOTAL_DURATION_SECONDS,
     TEAM_BUDGET_USD,
     TEAM_SPEND_USD,
     TOKENS_TOTAL,
@@ -790,6 +791,8 @@ async def chat(
     """Authenticate a team and route a unified chat request."""
     team_id = team_config["team_id"]
     request_provider = "none"
+    handler_started = time.perf_counter()
+    handler_status = "error"
     try:
         if request.model not in team_config["allowed_models"]:
             raise HTTPException(
@@ -1005,6 +1008,7 @@ async def chat(
             headers = {}
             if is_budget_warning:
                 headers["X-Budget-Warning"] = "true"
+            handler_status = "success"
             return StreamingResponse(
                 stream_chunks(),
                 media_type="text/plain",
@@ -1078,6 +1082,7 @@ async def chat(
             provider=provider_response.provider,
             status="success",
         ).inc()
+        handler_status = "success"
         return provider_response
     except HTTPException:
         REQUESTS_TOTAL.labels(
@@ -1100,3 +1105,11 @@ async def chat(
             status="error",
         ).inc()
         raise
+    finally:
+        # Observed on every exit path, including the rejections that never reach a
+        # provider, because "how long did the gateway take to say no" is as much a part of
+        # its overhead as a served request.
+        REQUEST_TOTAL_DURATION_SECONDS.labels(
+            team_id=team_id,
+            status=handler_status,
+        ).observe(time.perf_counter() - handler_started)

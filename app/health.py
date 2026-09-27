@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 from time import perf_counter
 
+from app.metrics import set_provider_health_state
 from app.models.schemas import ChatMessage, UnifiedChatRequest
 from app.providers.base import LLMProvider
 
@@ -40,6 +41,9 @@ class HealthMonitor:
     ) -> None:
         self.providers[provider.provider_name] = provider
         self.health_check_models[provider.provider_name] = health_check_model
+        # Publish "unknown" immediately, so a provider that has never been observed shows as
+        # -1 rather than as an absent series a dashboard would render as a gap.
+        set_provider_health_state(provider.provider_name, "unknown")
 
     async def check_provider_health(self, provider_name: str) -> ProviderHealth:
         provider = self.providers[provider_name]
@@ -58,12 +62,15 @@ class HealthMonitor:
             )
         except Exception as exc:
             logger.warning("Health check failed for %s: %s", provider_name, exc)
-            self._apply_outcome(health, succeeded=False)
+            self._apply_outcome(
+                health, succeeded=False, provider_name=provider_name
+            )
         else:
             self._apply_outcome(
                 health,
                 succeeded=True,
                 latency=perf_counter() - start_time,
+                provider_name=provider_name,
             )
 
         return health
@@ -82,7 +89,12 @@ class HealthMonitor:
         requests rather than by spending requests to ask.
         """
         health = self.provider_health.setdefault(provider_name, ProviderHealth())
-        self._apply_outcome(health, succeeded=succeeded, latency=latency)
+        self._apply_outcome(
+            health,
+            succeeded=succeeded,
+            latency=latency,
+            provider_name=provider_name,
+        )
 
     def should_probe(
         self,
@@ -149,6 +161,7 @@ class HealthMonitor:
         health: ProviderHealth,
         succeeded: bool,
         latency: float | None = None,
+        provider_name: str | None = None,
     ) -> None:
         """Apply one observation, from a probe or from real traffic, identically."""
         self._record_result(health, succeeded=succeeded)
@@ -169,6 +182,9 @@ class HealthMonitor:
             health.status = "healthy" if health.error_rate < 0.5 else "degraded"
 
         health.last_check_time = datetime.now(timezone.utc)
+
+        if provider_name is not None:
+            set_provider_health_state(provider_name, health.status)
 
     def _record_result(self, health: ProviderHealth, succeeded: bool) -> None:
         health.recent_results.append(succeeded)

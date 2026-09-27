@@ -127,3 +127,32 @@ def test_passive_outcomes_cost_no_provider_requests():
 
     assert monitor.get_status("mock") == "healthy"
     assert provider.requests == []
+
+
+def test_health_status_is_published_as_a_metric():
+    """Health lived only in the /admin/health JSON, so no dashboard or alert could see it."""
+    from prometheus_client import REGISTRY
+
+    monitor = HealthMonitor()
+    provider = CapturingMockProvider(should_fail=False, latency_seconds=0)
+    monitor.register_provider(provider, health_check_model="mock-model")
+
+    def state() -> float | None:
+        return REGISTRY.get_sample_value(
+            "gateway_provider_health", {"provider_name": "mock"}
+        )
+
+    # Registered but never observed reads -1, which a dashboard renders differently from
+    # both "healthy" and an absent series.
+    assert state() == -1
+
+    monitor.record_request_outcome("mock", succeeded=True, latency=0.01)
+    assert state() == 0
+
+    for _ in range(2):
+        monitor.record_request_outcome("mock", succeeded=False)
+    assert state() == 1
+
+    for _ in range(2):
+        monitor.record_request_outcome("mock", succeeded=False)
+    assert state() == 2
