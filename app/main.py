@@ -11,7 +11,9 @@ from typing import Any, AsyncGenerator
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import BaseModel, ConfigDict, Field
 
+from app.audit import read_audit_log, record_change
 from app.auth import verify_admin_key, verify_api_key
 from app.budget import (
     calculate_cost,
@@ -23,6 +25,12 @@ from app.budget import (
     reserve_budget,
 )
 from app.circuit_breaker import CircuitBreaker
+from app.config_writer import (
+    ConfigWriteError,
+    EDITABLE_FIELDS,
+    TeamNotFoundError,
+    update_team_limits,
+)
 from app.config import (
     CONFIG_RELOAD_INTERVAL_SECONDS,
     HEALTH_CHECK_INTERVAL_SECONDS,
@@ -52,8 +60,10 @@ from app.providers.groq_provider import GroqProvider
 from app.providers.mock_provider import MockProvider
 from app.providers.ollama_provider import OllamaProvider
 from app.rate_limiter import (
+    RATE_LIMIT_WINDOW_SECONDS,
     check_rate_limit,
     get_redis_client,
+    get_window_usage,
     record_token_usage,
 )
 from app.retry import call_with_retry
@@ -290,6 +300,181 @@ async def admin_config(
             for provider_name, models in app.state.model_catalog.items()
         },
     }
+
+
+class TeamLimitsUpdate(BaseModel):
+    """Runtime-adjustable limits.
+
+    ``extra="forbid"`` is the security control here, not tidiness: it rejects any field
+    that is not a limit — ``is_admin``, ``api_key``, the model and provider allowlists —
+    so the admin API cannot be used to grant privileges or widen an authorization
+    boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    requests_per_minute: int | None = Field(default=None, ge=0)
+    tokens_per_minute: int | None = Field(default=None, ge=0)
+    monthly_budget_usd: float | None = Field(default=None, ge=0)
+
+    def provided_changes(self) -> dict[str, Any]:
+        return {
+            field: value
+            for field, value in self.model_dump().items()
+            if value is not None
+        }
+
+
+def _team_config_by_id(team_id: str) -> dict[str, Any] | None:
+    for team_config in app.state.teams_config.values():
+        if team_config["team_id"] == team_id:
+            return team_config
+    return None
+
+
+@app.get("/admin/teams")
+async def admin_teams(
+    _admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, Any]:
+    """List every team and the limits currently in effect."""
+    teams = []
+    for team_config in app.state.teams_config.values():
+        teams.append(
+            {
+                "team_id": team_config["team_id"],
+                "requests_per_minute": team_config.get("requests_per_minute"),
+                "tokens_per_minute": team_config.get("tokens_per_minute", 0),
+                "monthly_budget_usd": team_config.get("monthly_budget_usd"),
+                "allowed_models": team_config.get("allowed_models", []),
+                "allowed_providers": team_config.get("allowed_providers", []),
+                "provider_priority": team_config.get("provider_priority", []),
+                "is_admin": team_config.get("is_admin", False),
+            }
+        )
+
+    return {
+        "editable_fields": list(EDITABLE_FIELDS),
+        "teams": sorted(teams, key=lambda team: team["team_id"]),
+    }
+
+
+@app.get("/admin/teams/{team_id}/usage")
+async def admin_team_usage(
+    team_id: str,
+    _admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, Any]:
+    """Report a team's live position against each of its limits."""
+    team_config = _team_config_by_id(team_id)
+    if team_config is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'No team with id "{team_id}".',
+        )
+
+    requests_used, tokens_used = await get_window_usage(
+        team_id, app.state.redis_client
+    )
+    spend = await get_current_spend(team_id, app.state.redis_client)
+
+    request_limit = team_config.get("requests_per_minute", 0)
+    token_limit = team_config.get("tokens_per_minute", 0)
+    budget = team_config.get("monthly_budget_usd", 0.0)
+
+    return {
+        "team_id": team_id,
+        "window_seconds": RATE_LIMIT_WINDOW_SECONDS,
+        "requests": {
+            "used": requests_used,
+            "limit": request_limit,
+            "remaining": max(0, request_limit - requests_used),
+        },
+        "tokens": {
+            "used": tokens_used,
+            "limit": token_limit,
+            "remaining": max(0, token_limit - tokens_used) if token_limit else None,
+        },
+        "budget": {
+            "spend_usd": spend,
+            "budget_usd": budget,
+            "utilisation_percent": (100 * spend / budget) if budget else None,
+            "warning": bool(budget) and spend >= 0.8 * budget,
+        },
+    }
+
+
+@app.patch("/admin/teams/{team_id}")
+async def admin_update_team(
+    team_id: str,
+    update: TeamLimitsUpdate,
+    admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, Any]:
+    """Adjust a team's limits without a restart.
+
+    The change is written into the team configuration file and then applied through the
+    same validated reload path a manual edit takes. Keeping the file as the single source
+    of truth means the running policy cannot silently diverge from the declared one.
+    """
+    changes = update.provided_changes()
+    if not changes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Provide at least one of: {', '.join(EDITABLE_FIELDS)}.",
+        )
+
+    try:
+        applied = update_team_limits(team_id, changes, TEAMS_CONFIG_PATH)
+    except TeamNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ConfigWriteError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"No change was made: {exc}",
+        ) from exc
+
+    if not applied["after"]:
+        return {"status": "unchanged", "team_id": team_id, "changes": {}}
+
+    try:
+        await reload_configuration()
+    except ConfigReloadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Limits were written to the configuration file but could not be "
+                f"applied, so the previous config is still in effect: {exc}"
+            ),
+        ) from exc
+
+    entry = await record_change(
+        app.state.redis_client,
+        actor=admin["team_id"],
+        action="update_team_limits",
+        target=team_id,
+        before=applied["before"],
+        after=applied["after"],
+    )
+
+    return {
+        "status": "applied",
+        "team_id": team_id,
+        "before": applied["before"],
+        "after": applied["after"],
+        "recorded_at": entry["timestamp"],
+    }
+
+
+@app.get("/admin/audit")
+async def admin_audit(
+    limit: int = 50,
+    _admin: dict[str, Any] = Depends(verify_admin_key),
+) -> dict[str, Any]:
+    """Return recent administrative changes, newest first."""
+    entries = await read_audit_log(
+        app.state.redis_client, limit=min(max(limit, 1), 500)
+    )
+    return {"entries": entries, "count": len(entries)}
 
 
 @app.post("/admin/mock/toggle-failure")

@@ -7,6 +7,9 @@ pytest
 pytest-asyncio
 pytest-httpx
 pyyaml
+# Round-trip YAML editing for the admin API: preserves comments and formatting when
+# writing config back, which plain pyyaml discards.
+ruamel.yaml
 redis
 fakeredis
 prometheus-client

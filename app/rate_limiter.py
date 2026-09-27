@@ -1,6 +1,7 @@
 """Redis-backed sliding window rate limiting on requests and tokens."""
 
 import os
+import re
 import time
 from uuid import uuid4
 
@@ -8,6 +9,8 @@ import redis.asyncio as redis
 
 
 RATE_LIMIT_WINDOW_SECONDS = 60
+
+_TOKEN_PREFIX = re.compile(r"^(-?\d+)")
 
 # Both limits are evaluated in one script, and that is the point rather than an
 # optimisation. Checking them separately means a request can consume a request slot, then
@@ -144,3 +147,32 @@ async def record_token_usage(
     now = time.time()
     await redis_client.zadd(_token_key(team_id), {f"{tokens}:{uuid4()}": now})
     await redis_client.expire(_token_key(team_id), RATE_LIMIT_WINDOW_SECONDS)
+
+
+async def get_window_usage(team_id: str, redis_client) -> tuple[int, int]:
+    """Return ``(requests_used, tokens_used)`` in the current window, without changing it.
+
+    The admission script trims expired entries as a side effect of checking them, which is
+    correct there but wrong here: an endpoint that exists to report limiter state must not
+    alter it. Counting by score instead of trimming keeps this read genuinely read-only, so
+    polling it cannot perturb the thing being polled.
+    """
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW_SECONDS
+
+    requests_used = int(
+        await redis_client.zcount(_request_key(team_id), window_start, "+inf")
+    )
+
+    tokens_used = 0
+    entries = await redis_client.zrangebyscore(
+        _token_key(team_id), window_start, "+inf"
+    )
+    for entry in entries:
+        if isinstance(entry, bytes):
+            entry = entry.decode()
+        match = _TOKEN_PREFIX.match(entry)
+        if match:
+            tokens_used += int(match.group(1))
+
+    return requests_used, tokens_used

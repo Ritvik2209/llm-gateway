@@ -41,8 +41,10 @@ services:
       - .env
     volumes:
       # The Dockerfile copies config/ into the image so it runs standalone, but hot reload
-      # can only see edits if the directory is bind-mounted over that copy.
-      - ./config:/app/config:ro
+      # can only see edits if the directory is bind-mounted over that copy. Writable
+      # because the admin API edits teams.yaml in place: the file stays the single source
+      # of truth rather than being shadowed by overrides in another store.
+      - ./config:/app/config
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
