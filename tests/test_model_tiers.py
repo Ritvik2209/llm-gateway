@@ -271,3 +271,56 @@ def test_cost_is_charged_against_the_model_that_actually_served_it(monkeypatch):
     )
     # Reserved at the paid model's price, reconciled down to the free one it ran on.
     assert spend == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Fallback accounting
+# ---------------------------------------------------------------------------
+
+
+def read_fallback(team_id: str, from_provider: str, to_provider: str) -> float:
+    from prometheus_client import REGISTRY
+
+    value = REGISTRY.get_sample_value(
+        "gateway_fallback_triggered_total",
+        {
+            "team_id": team_id,
+            "from_provider": from_provider,
+            "to_provider": to_provider,
+        },
+    )
+    return 0.0 if value is None else value
+
+
+def test_capability_routing_is_not_counted_as_a_fallback(monkeypatch):
+    """Being served elsewhere because the preferred provider cannot host the model is
+    routine routing, not a failover.
+
+    The team prefers groq and asks for llama3.2, which only ollama serves. groq is healthy
+    and was never called, so counting this as a groq-to-ollama fallback would make the
+    metric fire on ordinary traffic and hide real outages.
+    """
+    client, groq, ollama = build(monkeypatch)
+    before = read_fallback("tier-team", "groq", "ollama")
+
+    response = client.post(
+        "/v1/chat", headers=HEADERS, json={**REQUEST, "model": "chat-local"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "ollama"
+    assert groq.models_requested == []
+    assert read_fallback("tier-team", "groq", "ollama") == before
+
+
+def test_a_real_failure_is_counted_as_a_fallback(monkeypatch):
+    """The preferred provider could serve it and did not, so this is a genuine failover."""
+    client, groq, ollama = build(monkeypatch, groq_fails=True)
+    before = read_fallback("tier-team", "groq", "ollama")
+
+    response = client.post("/v1/chat", headers=HEADERS, json=REQUEST)
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "ollama"
+    assert groq.models_requested  # it was attempted, and failed
+    assert read_fallback("tier-team", "groq", "ollama") == before + 1

@@ -678,9 +678,35 @@ def get_provider_candidates(
     return candidates
 
 
-def get_first_priority_provider(team_config: dict[str, Any]) -> str | None:
-    """Return the team's first configured provider preference."""
+def get_first_priority_provider(
+    team_config: dict[str, Any],
+    model: str | None = None,
+    model_catalog: ModelCatalog | None = None,
+) -> str | None:
+    """Return the provider this request would have preferred, ignoring availability.
+
+    "Preferred" means first in the team's priority order *among providers that could serve
+    this request at all*. Capability is part of the question and availability is not: a
+    provider that does not host the requested model was never a candidate, so being served
+    elsewhere is routine routing rather than a fallback, while a provider skipped because
+    its circuit is open genuinely was displaced.
+
+    Getting this wrong made the fallback counter fire on ordinary traffic. team-alpha
+    prefers groq and asks for llama3.2, which only ollama serves; groq was never called and
+    never failed, yet the request was recorded as a groq-to-ollama fallback. An alert on
+    fallback rate would have fired constantly, and a real Groq outage would have been
+    indistinguishable from a team asking for a model Groq does not host.
+    """
     provider_priority = get_allowed_provider_priority(team_config)
+
+    if model is not None and model_catalog is not None:
+        resolution = model_catalog.resolve(model)
+        provider_priority = [
+            provider_name
+            for provider_name in provider_priority
+            if provider_name in resolution
+        ]
+
     return provider_priority[0] if provider_priority else None
 
 
@@ -703,7 +729,9 @@ async def call_chat_with_fallback(
     )
     last_exception: Exception | None = None
     team_id = team_config["team_id"]
-    first_priority_provider = get_first_priority_provider(team_config)
+    first_priority_provider = get_first_priority_provider(
+        team_config, request.model, model_catalog
+    )
 
     for provider_name, provider, physical_model in candidates:
         started_at = time.perf_counter()
@@ -911,7 +939,9 @@ async def chat(
         request_provider = selected_provider_name
 
         if request.stream is True:
-            first_priority_provider = get_first_priority_provider(team_config)
+            first_priority_provider = get_first_priority_provider(
+                team_config, request.model, app.state.model_catalog
+            )
             if first_priority_provider and selected_provider_name != first_priority_provider:
                 FALLBACK_TRIGGERED_TOTAL.labels(
                     team_id=team_id,
