@@ -48,6 +48,7 @@ from app.metrics import (
     ERRORS_TOTAL,
     FALLBACK_TRIGGERED_TOTAL,
     REQUEST_DURATION_SECONDS,
+    GATEWAY_OVERHEAD_SECONDS,
     REQUESTS_TOTAL,
     REQUEST_TOTAL_DURATION_SECONDS,
     TEAM_BUDGET_USD,
@@ -717,8 +718,13 @@ async def call_chat_with_fallback(
     circuit_breaker: CircuitBreaker,
     providers: dict[str, LLMProvider],
     model_catalog: ModelCatalog | None = None,
+    provider_time: dict[str, float] | None = None,
 ) -> UnifiedChatResponse:
-    """Call providers in fallback order, recording circuit breaker outcomes."""
+    """Call providers in fallback order, recording circuit breaker outcomes.
+
+    ``provider_time`` accumulates seconds spent inside provider calls, including failed
+    attempts, so the caller can separate its own work from time it merely waited on.
+    """
     candidates = get_provider_candidates(
         team_config,
         health_monitor,
@@ -742,6 +748,8 @@ async def call_chat_with_fallback(
             provider_response = await call_with_retry(provider, provider_request)
         except Exception as exc:
             elapsed = time.perf_counter() - started_at
+            if provider_time is not None:
+                provider_time["seconds"] += elapsed
             REQUEST_DURATION_SECONDS.labels(
                 team_id=team_id,
                 provider=provider_name,
@@ -774,6 +782,8 @@ async def call_chat_with_fallback(
             continue
 
         elapsed = time.perf_counter() - started_at
+        if provider_time is not None:
+            provider_time["seconds"] += elapsed
         REQUEST_DURATION_SECONDS.labels(
             team_id=team_id,
             provider=provider_name,
@@ -821,6 +831,8 @@ async def chat(
     request_provider = "none"
     handler_started = time.perf_counter()
     handler_status = "error"
+    # Seconds spent waiting on providers, which is not the gateway's own cost.
+    provider_time = {"seconds": 0.0}
     try:
         if request.model not in team_config["allowed_models"]:
             raise HTTPException(
@@ -1039,6 +1051,10 @@ async def chat(
             if is_budget_warning:
                 headers["X-Budget-Warning"] = "true"
             handler_status = "success"
+            # For a streaming response the provider call outlives the handler, so the
+            # overhead figure recorded below is time to first byte minus nothing. That is
+            # honest for this path: the streaming provider time is observed separately in
+            # stream_chunks.
             return StreamingResponse(
                 stream_chunks(),
                 media_type="text/plain",
@@ -1053,6 +1069,7 @@ async def chat(
                 app.state.circuit_breaker,
                 runtime_providers,
                 model_catalog=app.state.model_catalog,
+                provider_time=provider_time,
             )
         except Exception:
             # No provider served the request, so it incurred no provider cost. Holding
@@ -1139,7 +1156,13 @@ async def chat(
         # Observed on every exit path, including the rejections that never reach a
         # provider, because "how long did the gateway take to say no" is as much a part of
         # its overhead as a served request.
+        total_elapsed = time.perf_counter() - handler_started
         REQUEST_TOTAL_DURATION_SECONDS.labels(
             team_id=team_id,
             status=handler_status,
-        ).observe(time.perf_counter() - handler_started)
+        ).observe(total_elapsed)
+        # Computed per request, so the aggregate is a real distribution of overhead rather
+        # than the difference between two unrelated percentiles.
+        GATEWAY_OVERHEAD_SECONDS.labels(team_id=team_id).observe(
+            max(0.0, total_elapsed - provider_time["seconds"])
+        )

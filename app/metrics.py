@@ -29,6 +29,23 @@ REQUEST_TOTAL_DURATION_SECONDS = Histogram(
     ["team_id", "status"],
 )
 
+# Overhead is computed per request and then aggregated, never as the difference between two
+# aggregates. Subtracting percentiles is invalid — P95(end-to-end) minus P95(provider) is
+# not the P95 of the difference, because the two percentiles describe different requests.
+# Doing it that way produced a reading of -72ms, which is how the error announced itself.
+#
+# Requests rejected before any provider call contribute their whole duration here, which is
+# correct: policy checks are gateway work.
+GATEWAY_OVERHEAD_SECONDS = Histogram(
+    "gateway_overhead_seconds",
+    "Gateway time per request, excluding time spent inside provider calls.",
+    ["team_id"],
+    buckets=(
+        0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0,
+        float("inf"),
+    ),
+)
+
 ERRORS_TOTAL = Counter(
     "gateway_errors_total",
     "Total gateway errors.",

@@ -20,7 +20,7 @@
       "id": 1,
       "type": "stat",
       "title": "Gateway overhead (P95)",
-      "description": "End-to-end P95 minus provider-call P95: the gateway's own cost. Amber above the 10ms target.",
+      "description": "Gateway time per request, measured directly and excluding time spent inside provider calls. Amber above the 10ms target. Not computed by subtracting two percentiles: P95(end-to-end) minus P95(provider) describes different requests on each side and can read negative.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -79,8 +79,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(gateway_request_total_duration_seconds_bucket[5m])) by (le))\n  -\nhistogram_quantile(0.95, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "overhead",
+          "expr": "histogram_quantile(0.95, sum(rate(gateway_overhead_seconds_bucket[5m])) by (le))",
+          "legendFormat": "overhead p95",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -613,6 +613,114 @@
           "expr": "sum(rate(gateway_tokens_total[5m])) by (token_type)",
           "legendFormat": "{{token_type}}",
           "refId": "A",
+          "range": true,
+          "instant": false,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Gateway overhead percentiles",
+      "description": "The gateway's own cost over time. Rises with concurrency once the process saturates, because queueing inside the gateway is gateway time.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum(rate(gateway_overhead_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(gateway_overhead_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(gateway_overhead_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C",
           "range": true,
           "instant": false,
           "editorMode": "code"
