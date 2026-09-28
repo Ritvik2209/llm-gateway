@@ -1,0 +1,151 @@
+groups:
+  - name: llm-gateway
+    interval: 15s
+    rules:
+
+      # ---------------------------------------------------------------------
+      # Provider availability
+      # ---------------------------------------------------------------------
+
+      - alert: GatewayProviderErrorRate
+        # provider="none" marks requests the gateway rejected itself — rate limit, budget,
+        # unknown model. Including them would page somebody about a provider that was
+        # never called, for a policy decision working exactly as configured.
+        expr: |
+          (
+            sum(rate(gateway_errors_total{error_type=~"Provider.*"}[5m])) by (provider)
+            /
+            clamp_min(sum(rate(gateway_requests_total{provider!="none"}[5m])) by (provider), 0.0001)
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: provider
+        annotations:
+          summary: 'Provider {{ $labels.provider }} is failing {{ $value | humanizePercentage }} of requests'
+          description: >-
+            Genuine provider failures only; rate-limit and budget rejections are excluded.
+            The gateway is already retrying with backoff and failing over to the next
+            provider in each team's chain, so callers may not be seeing errors yet — check
+            the fallback panel on the Operations dashboard to see how much traffic has
+            moved. If this provider's circuit opens it will be skipped entirely until its
+            cooldown elapses.
+          dashboard: http://localhost:3000/d/gw-operations/llm-gateway-operations
+
+      - alert: GatewayProviderDown
+        # Health is learned from real traffic where it exists, so this reflects what
+        # requests actually experienced rather than a synthetic probe.
+        expr: gateway_provider_health == 2
+        for: 2m
+        labels:
+          severity: critical
+          component: provider
+        annotations:
+          summary: 'Provider {{ $labels.provider_name }} is down'
+          description: >-
+            Four or more consecutive failures. Teams whose priority chain reaches another
+            provider that serves the same model tier will fail over automatically; teams
+            with only this provider in their chain are receiving 503s. Check which tiers
+            name this provider in config/models.yaml.
+          dashboard: http://localhost:3000/d/gw-operations/llm-gateway-operations
+
+      - alert: GatewayCircuitBreakerOpen
+        expr: gateway_circuit_breaker_state == 2
+        for: 1m
+        labels:
+          severity: warning
+          component: provider
+        annotations:
+          summary: 'Circuit breaker open for {{ $labels.provider_name }}'
+          description: >-
+            The provider is being skipped entirely rather than retried, which is the
+            intended protective behaviour and means requests are no longer spending the
+            retry budget on it. It will move to half-open after a 30s cooldown and close
+            again on the next success. Sustained firing means recovery attempts keep
+            failing.
+          dashboard: http://localhost:3000/d/gw-operations/llm-gateway-operations
+
+      # ---------------------------------------------------------------------
+      # Cost
+      # ---------------------------------------------------------------------
+
+      - alert: GatewayTeamApproachingBudget
+        # The `> 0` guard is load-bearing: teams configured with no cap would otherwise
+        # divide by zero, evaluate to +Inf, and fire permanently.
+        expr: |
+          100 * gateway_team_spend_usd / (gateway_team_budget_usd > 0) > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: budget
+        annotations:
+          summary: 'Team {{ $labels.team_id }} has used {{ $value | printf "%.1f" }}% of its monthly budget'
+          description: >-
+            Requests are still being served. At 100% the gateway refuses them with 402
+            before calling a provider, so the cap is enforced rather than merely reported.
+            Raise the cap with PATCH /admin/teams/{{ $labels.team_id }} if the spend is
+            expected; the change is applied without a restart and recorded in the audit
+            trail.
+          dashboard: http://localhost:3000/d/gw-business/llm-gateway-business
+
+      - alert: GatewayTeamBudgetExhausted
+        expr: |
+          100 * gateway_team_spend_usd / (gateway_team_budget_usd > 0) >= 100
+        for: 1m
+        labels:
+          severity: critical
+          component: budget
+        annotations:
+          summary: 'Team {{ $labels.team_id }} has exhausted its monthly budget'
+          description: >-
+            Every request from this team is now refused with 402 before reaching a
+            provider. This is enforcement working, not a fault — but the team is down
+            until its cap is raised or the month rolls over.
+          dashboard: http://localhost:3000/d/gw-business/llm-gateway-business
+
+      # ---------------------------------------------------------------------
+      # Latency
+      # ---------------------------------------------------------------------
+
+      - alert: GatewayLatencySLABreached
+        # The target is sub-10ms of gateway overhead. P99 is used here rather than P95
+        # because the spec asks for it, with a threshold well above the target: P99 is
+        # dominated by rare outliers, so alerting it at 10ms would fire on normal traffic.
+        # Overhead excludes time spent inside provider calls, so this measures the
+        # gateway's own cost and not slow inference.
+        expr: |
+          histogram_quantile(0.99, sum(rate(gateway_overhead_seconds_bucket[5m])) by (le)) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: latency
+        annotations:
+          summary: 'Gateway overhead P99 is {{ $value | humanizeDuration }}, above the 10ms target'
+          description: >-
+            This is the gateway's own time, excluding provider calls, so it is not slow
+            inference. Sustained growth usually means the process is saturating: at
+            saturation latency is concurrency divided by throughput, so overhead rises
+            with load even though per-request work is unchanged. Check the request rate
+            alongside it.
+          dashboard: http://localhost:3000/d/gw-performance/llm-gateway-performance
+
+      # ---------------------------------------------------------------------
+      # Configuration
+      # ---------------------------------------------------------------------
+
+      - alert: GatewayConfigReloadRejected
+        # The dangerous outcome is not the rejection — the previous config keeps serving —
+        # but an operator believing a change landed when it did not.
+        expr: increase(gateway_config_reloads_total{result="rejected"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: config
+        annotations:
+          summary: 'Configuration on disk was rejected and is not in effect'
+          description: >-
+            The gateway is still serving the previous configuration, so traffic is
+            unaffected, but the file and the running policy have diverged. Any edit made
+            since then has not taken effect. POST /admin/config/reload returns the parse
+            error, and GET /admin/config reports what is actually running.
+          dashboard: http://localhost:3000/d/gw-operations/llm-gateway-operations

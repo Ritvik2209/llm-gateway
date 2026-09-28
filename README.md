@@ -239,6 +239,42 @@ Exported metrics: `gateway_requests_total`, `gateway_request_duration_seconds`, 
 
 Cost is a counter, so spend over any window is a query rather than another metric — `sum(increase(gateway_cost_usd_total[1d])) by (team_id)` gives cost per team per day. Budget utilisation comes from the two gauges, which mirror the authoritative Redis state and are seeded at startup so a restarted gateway does not appear to have reset every budget: `100 * gateway_team_spend_usd / gateway_team_budget_usd`.
 
+## Alerting
+
+Seven rules in `monitoring/alerts.yml`, evaluated by Prometheus and routed through
+Alertmanager on `:9093`:
+
+| Alert | Fires when |
+|---|---|
+| `GatewayProviderErrorRate` | A provider fails more than 10% of requests for 5m |
+| `GatewayProviderDown` | Health reports a provider down for 2m |
+| `GatewayCircuitBreakerOpen` | A circuit has been open for 1m |
+| `GatewayTeamApproachingBudget` | A team passes 80% of its monthly cap |
+| `GatewayTeamBudgetExhausted` | A team hits 100% and is being refused with 402 |
+| `GatewayLatencySLABreached` | Gateway overhead P99 exceeds 50ms for 10m |
+| `GatewayConfigReloadRejected` | Config on disk was refused, so it and the running policy have diverged |
+
+Three of these needed more than a threshold. The provider error rate excludes the
+synthetic `provider="none"` label, or it would page about a provider that was never
+called for a rejection the gateway made itself. The budget rules divide by a guarded
+denominator, because a team with no cap would evaluate to `+Inf` and fire forever. The
+latency rule watches *overhead* rather than end-to-end latency, so it measures the
+gateway's own cost rather than slow inference.
+
+Annotations say what is happening, whether automatic failover is already absorbing it,
+and where to look next — not a restatement of the expression. Inhibition rules stop one
+incident becoming several pages.
+
+**Slack delivery is configured but unverified.** The receiver is complete apart from the
+webhook URL; switching to it is a one-line route change in
+`monitoring/alertmanager/alertmanager.yml` plus a real URL, with no code change. Until
+then the default receiver posts to a local sink so the whole path can be checked without a
+credential:
+
+```bash
+python scripts/alert_sink.py     # prints the exact payload Alertmanager would deliver
+```
+
 ## Known Limitations
 
 These were found by testing the running system, and are documented rather than papered over. Full detail and reproduction for each is in **[LOAD_TEST_RESULTS.md](LOAD_TEST_RESULTS.md#known-limitations)**.

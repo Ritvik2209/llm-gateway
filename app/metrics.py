@@ -160,3 +160,14 @@ CONFIG_LOADED_TIMESTAMP = Gauge(
     "gateway_config_loaded_timestamp_seconds",
     "Unix timestamp of the configuration currently in effect.",
 )
+
+# A labelled counter has no series until its first increment, which breaks both dashboards
+# and alerts precisely when they matter most — on the first occurrence. A panel renders
+# "No data" instead of 0, and worse, `increase()` sees a series that appeared already at 1
+# and reports no rise at all, so an alert on the first rejected reload never fires.
+#
+# Pre-creating the children makes the series exist at 0 from startup, so the first
+# increment is an observable transition. Only viable where the label values are known and
+# few; team- and provider-labelled counters are unbounded and left alone.
+for _result in ("applied", "rejected"):
+    CONFIG_RELOADS_TOTAL.labels(result=_result)

@@ -1,0 +1,59 @@
+route:
+  # Default to the webhook receiver so the stack starts and is verifiable with no
+  # credentials. Switch this to `slack` once a real webhook URL is in place below.
+  receiver: webhook
+  # Grouping by team and provider as well as alertname means one incident produces one
+  # notification per affected tenant rather than one per firing series.
+  group_by: ['alertname', 'team_id', 'provider', 'provider_name']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: webhook
+      # A provider being down or a team being unable to spend is worth repeating sooner.
+      repeat_interval: 1h
+
+inhibit_rules:
+  # A provider that is down will also be failing requests. Page once, about the cause.
+  - source_matchers:
+      - alertname = "GatewayProviderDown"
+    target_matchers:
+      - alertname = "GatewayProviderErrorRate"
+    equal: ['provider']
+
+  # A team that has exhausted its budget is trivially also over 80% of it.
+  - source_matchers:
+      - alertname = "GatewayTeamBudgetExhausted"
+    target_matchers:
+      - alertname = "GatewayTeamApproachingBudget"
+    equal: ['team_id']
+
+receivers:
+  # Verifiable without any credential: `python scripts/alert_sink.py` prints the exact
+  # payload Alertmanager would deliver, which is the only part of Slack delivery that
+  # carries engineering risk. The POST to Slack itself is a solved integration.
+  - name: webhook
+    webhook_configs:
+      - url: http://host.docker.internal:5001/alerts
+        send_resolved: true
+
+  # Fully configured apart from the URL. To use it: replace api_url with a real Slack
+  # incoming-webhook URL and change `receiver: webhook` above to `receiver: slack`.
+  # No code change is involved.
+  - name: slack
+    slack_configs:
+      - api_url: https://hooks.slack.com/services/REPLACE/WITH/YOUR-WEBHOOK
+        channel: '#llm-gateway-alerts'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >-
+          {{ range .Alerts }}*{{ .Annotations.summary }}*
+
+          {{ .Annotations.description }}
+
+          {{ if .Annotations.dashboard }}<{{ .Annotations.dashboard }}|Open dashboard>{{ end }}
+
+          {{ end }}

@@ -14,6 +14,21 @@ services:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    networks:
+      - gateway-net
+
+  alertmanager:
+    image: prom/alertmanager
+    container_name: gateway-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    extra_hosts:
+      # The default receiver posts to a sink running on the host, so notifications can be
+      # inspected without a Slack credential.
+      - "host.docker.internal:host-gateway"
     networks:
       - gateway-net
 
