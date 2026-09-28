@@ -115,7 +115,7 @@ class OllamaProvider(LLMProvider):
                         try:
                             response_data = json.loads(line)
                         except json.JSONDecodeError as exc:
-                            raise RuntimeError(
+                            raise ProviderUnavailable(
                                 f"Ollama stream returned invalid JSON: {line}"
                             ) from exc
 
@@ -134,11 +134,26 @@ class OllamaProvider(LLMProvider):
                             }
                             break
         except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
+            # The body is deliberately not read here. On a streamed response
+            # `exc.response.text` raises ResponseNotRead, so the status is all this path
+            # can report without an extra await inside the failure handler.
+            error_class = error_class_for_status(exc.response.status_code)
+            message = (
                 "Ollama streaming chat request failed with "
                 f"status {exc.response.status_code}"
+            )
+            if error_class is ProviderRateLimited:
+                raise ProviderRateLimited(
+                    message,
+                    status_code=exc.response.status_code,
+                    retry_after=parse_retry_after(exc.response.headers),
+                ) from exc
+            raise error_class(message, status_code=exc.response.status_code) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeout(
+                f"Ollama streaming chat request timed out: {exc}"
             ) from exc
         except httpx.RequestError as exc:
-            raise RuntimeError(
+            raise ProviderUnavailable(
                 f"Ollama streaming chat request failed: {exc}"
             ) from exc

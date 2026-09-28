@@ -161,7 +161,7 @@ class GroqProvider(LLMProvider):
                         try:
                             response_data = json.loads(data)
                         except json.JSONDecodeError as exc:
-                            raise RuntimeError(
+                            raise ProviderUnavailable(
                                 f"Groq stream returned invalid JSON: {data}"
                             ) from exc
 
@@ -178,11 +178,26 @@ class GroqProvider(LLMProvider):
                         if content:
                             yield content
         except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
+            # The body is deliberately not read here. On a streamed response
+            # `exc.response.text` raises ResponseNotRead, so the status is all this path
+            # can report without an extra await inside the failure handler.
+            error_class = error_class_for_status(exc.response.status_code)
+            message = (
                 "Groq streaming chat request failed with "
                 f"status {exc.response.status_code}"
+            )
+            if error_class is ProviderRateLimited:
+                raise ProviderRateLimited(
+                    message,
+                    status_code=exc.response.status_code,
+                    retry_after=parse_retry_after(exc.response.headers),
+                ) from exc
+            raise error_class(message, status_code=exc.response.status_code) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeout(
+                f"Groq streaming chat request timed out: {exc}"
             ) from exc
         except httpx.RequestError as exc:
-            raise RuntimeError(
+            raise ProviderUnavailable(
                 f"Groq streaming chat request failed: {exc}"
             ) from exc

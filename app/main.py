@@ -962,15 +962,23 @@ async def chat(
                 ).inc()
 
             async def stream_chunks() -> AsyncGenerator[str, None]:
-                chunks: list[str] = []
+                chunks_yielded = 0
                 started_at = time.perf_counter()
+                # Time to first chunk, not total stream duration: the two are different
+                # quantities and only the first is a measure of provider responsiveness.
+                # Total duration is a function of how many tokens were generated, so
+                # folding it into the health monitor's latency series would put stream
+                # lengths and request latencies in the same list.
+                first_chunk_latency: float | None = None
                 try:
                     async for chunk in selected_provider.chat_stream(
                         request.model_copy(update={"model": selected_model})
                     ):
-                        chunks.append(chunk)
+                        if chunks_yielded == 0:
+                            first_chunk_latency = time.perf_counter() - started_at
+                        chunks_yielded += 1
                         yield chunk
-                except Exception:
+                except Exception as exc:
                     REQUEST_DURATION_SECONDS.labels(
                         team_id=team_id,
                         provider=selected_provider_name,
@@ -978,7 +986,9 @@ async def chat(
                     ERRORS_TOTAL.labels(
                         team_id=team_id,
                         provider=selected_provider_name,
-                        error_type="provider_error",
+                        error_type=type(exc).__name__
+                        if isinstance(exc, ProviderError)
+                        else "provider_error",
                     ).inc()
                     REQUESTS_TOTAL.labels(
                         team_id=team_id,
@@ -986,6 +996,35 @@ async def chat(
                         provider=selected_provider_name,
                         status="error",
                     ).inc()
+
+                    # The resilience layer has to learn from a streaming failure exactly
+                    # as it does from a non-streaming one. Without this the circuit
+                    # breaker and health monitor never observe the streaming path at all,
+                    # so a provider that fails only under streaming load stays "healthy"
+                    # with a closed circuit and keeps receiving traffic. For a chat
+                    # gateway streaming is the dominant traffic pattern, which makes that
+                    # blind spot the size of the main use case rather than an edge case.
+                    if getattr(exc, "provider_at_fault", True):
+                        app.state.circuit_breaker.record_failure(selected_provider_name)
+                        health_monitor.record_request_outcome(
+                            selected_provider_name,
+                            succeeded=False,
+                        )
+
+                    # Both failure shapes are recorded identically because the gateway
+                    # should learn the same thing from each, but they differ in what the
+                    # caller sees. Failing before the first chunk means the client got
+                    # nothing; failing after it means the client already has a 200 and a
+                    # truncated body, because HTTP cannot retract a status line once the
+                    # body has begun. That asymmetry is inherent to streaming, so the
+                    # chunk count is logged to tell the two apart after the fact.
+                    logger.warning(
+                        "Streaming failed for provider %s after %d chunk(s): %s",
+                        selected_provider_name,
+                        chunks_yielded,
+                        exc,
+                    )
+
                     await release_reservation(
                         team_id=team_id,
                         reserved_usd=budget_reservation,
@@ -997,7 +1036,12 @@ async def chat(
                     team_id=team_id,
                     provider=selected_provider_name,
                 ).observe(time.perf_counter() - started_at)
-                app.state.last_streamed_chat_response_text = "".join(chunks)
+                app.state.circuit_breaker.record_success(selected_provider_name)
+                health_monitor.record_request_outcome(
+                    selected_provider_name,
+                    succeeded=True,
+                    latency=first_chunk_latency,
+                )
                 stream_usage = getattr(
                     selected_provider,
                     "last_stream_usage",
