@@ -9,10 +9,22 @@ REQUESTS_TOTAL = Counter(
     ["team_id", "model", "provider", "status"],
 )
 
+# Explicit buckets rather than the library default, whose first boundary is 5ms. The mock
+# provider answers in about 1ms and a rejected request in well under that, so with the
+# default set roughly 97% of samples landed in one undifferentiated bucket and
+# histogram_quantile interpolated inside it — reporting ~4.9ms for any sub-5ms workload
+# regardless of the real distribution. Two panels showing an identical 4.94ms was the
+# symptom. The range still reaches 10s because local CPU inference genuinely takes seconds.
+LATENCY_BUCKETS = (
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+    1.0, 2.5, 5.0, 10.0, float("inf"),
+)
+
 REQUEST_DURATION_SECONDS = Histogram(
     "gateway_request_duration_seconds",
     "Provider request latency in seconds.",
     ["team_id", "provider"],
+    buckets=LATENCY_BUCKETS,
 )
 
 # The histogram above wraps the provider call only, so it cannot answer "how much latency
@@ -27,6 +39,7 @@ REQUEST_TOTAL_DURATION_SECONDS = Histogram(
     "gateway_request_total_duration_seconds",
     "End-to-end gateway request latency in seconds, including all policy checks.",
     ["team_id", "status"],
+    buckets=LATENCY_BUCKETS,
 )
 
 # Overhead is computed per request and then aggregated, never as the difference between two
@@ -42,7 +55,7 @@ GATEWAY_OVERHEAD_SECONDS = Histogram(
     ["team_id"],
     buckets=(
         0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0,
-        float("inf"),
+        2.5, 5.0, float("inf"),
     ),
 )
 
