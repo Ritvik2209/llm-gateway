@@ -4,7 +4,7 @@ route:
   receiver: webhook
   # Grouping by team and provider as well as alertname means one incident produces one
   # notification per affected tenant rather than one per firing series.
-  group_by: ['alertname', 'team_id', 'provider', 'provider_name']
+  group_by: ['alertname', 'team_id', 'provider', 'provider_name', 'model']
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
@@ -18,10 +18,20 @@ route:
 
 inhibit_rules:
   # A provider that is down will also be failing requests. Page once, about the cause.
+  # This matches on `provider` because the error-rate metric labels it that way; the
+  # health-based alerts carry provider_name and set `provider` explicitly so this rule
+  # has a common label to match on. Without that it silently never fires.
   - source_matchers:
       - alertname = "GatewayProviderDown"
     target_matchers:
       - alertname = "GatewayProviderErrorRate"
+    equal: ['provider']
+
+  # A provider down for every model is trivially also down for each one individually.
+  - source_matchers:
+      - alertname = "GatewayProviderDown"
+    target_matchers:
+      - alertname = "GatewayProviderModelDown"
     equal: ['provider']
 
   # A team that has exhausted its budget is trivially also over 80% of it.

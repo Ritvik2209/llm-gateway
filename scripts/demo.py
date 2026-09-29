@@ -50,6 +50,15 @@ def claim(text: str) -> None:
     print(f"\n  proving: {text}")
 
 
+def latency_sample_count(state: dict) -> int:
+    """Latency samples across every model of one provider.
+
+    Health is keyed per provider-model pair, so the per-provider figure the demo prints
+    is the sum over that provider's models rather than a single list.
+    """
+    return sum(len(model["recent_latencies"]) for model in state["models"].values())
+
+
 def check(description: str, condition: bool, detail: str = "") -> None:
     mark = "PASS" if condition else "FAIL"
     (PASSES if condition else FAILURES).append(description)
@@ -153,8 +162,13 @@ def demo_stack(client: httpx.Client) -> None:
         print(
             f"      {name:8} status={state['status']:9} "
             f"circuit={state['circuit_breaker_state']:9} "
-            f"samples={len(state['recent_latencies'])}"
+            f"samples={latency_sample_count(state)}"
         )
+        for model, model_state in state["models"].items():
+            print(
+                f"          - {model:22} {model_state['status']:9} "
+                f"fails={model_state['consecutive_failures']}"
+            )
     check("all providers registered", set(providers) == {"groq", "ollama", "mock"})
 
 
@@ -514,7 +528,7 @@ def demo_observability(client: httpx.Client) -> None:
     providers = client.get(f"{GATEWAY}/admin/health", headers=ADMIN).json()
     print("\n    latency samples per provider (probes + real traffic):")
     for name, state in providers.items():
-        print(f"      {name:8} {len(state['recent_latencies']):3} samples")
+        print(f"      {name:8} {latency_sample_count(state):3} samples")
     print(
         "      a closed, healthy provider is not probed at all; at the old fixed\n"
         "      10s interval this was 8,640 probes/day against a 1,000/day Groq limit"

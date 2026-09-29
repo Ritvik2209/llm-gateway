@@ -20,7 +20,7 @@
       "id": 1,
       "type": "stat",
       "title": "Provider health",
-      "description": "From real request outcomes where traffic exists, and a probe only where it does not. -1 means never observed.",
+      "description": "Health of each provider-model pair: -1 unknown, 0 healthy, 1 degraded, 2 down. Split by model because a provider can be quota-exhausted on one model while serving another normally - the case logical model tiers made reachable. A pair reading -1 has been registered but never observed, which is distinct from healthy.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -106,7 +106,7 @@
             "uid": "prometheus"
           },
           "expr": "gateway_provider_health",
-          "legendFormat": "{{provider_name}}",
+          "legendFormat": "{{provider_name}} / {{model}}",
           "refId": "A",
           "range": true,
           "instant": false,

@@ -32,21 +32,50 @@ groups:
             cooldown elapses.
           dashboard: http://localhost:3000/d/gw-operations/llm-gateway-operations
 
-      - alert: GatewayProviderDown
+      - alert: GatewayProviderModelDown
         # Health is learned from real traffic where it exists, so this reflects what
         # requests actually experienced rather than a synthetic probe.
+        #
+        # Fires per provider-model pair. A provider quota-exhausted on one model while
+        # serving another normally is the ordinary case, not a corner case, and it is
+        # not a provider outage — so it is a warning naming the model, and the critical
+        # alert below is reserved for the provider being genuinely unusable.
         expr: gateway_provider_health == 2
+        for: 2m
+        labels:
+          severity: warning
+          component: provider
+          # Normalised so Alertmanager can inhibit on it: the health metric labels this
+          # provider_name while the error-rate metric labels it provider, and an `equal`
+          # match across two different label names silently never matches.
+          provider: '{{ $labels.provider_name }}'
+        annotations:
+          summary: 'Provider {{ $labels.provider_name }} is down for model {{ $labels.model }}'
+          description: >-
+            Four or more consecutive failures on this provider-model pair. The provider's
+            other models may be serving normally — check the provider health panel, which
+            is split by model. Teams whose priority chain reaches another provider serving
+            the same tier will fail over automatically; teams with only this provider in
+            their chain are receiving 503s for this model.
+          dashboard: http://localhost:3000/d/gw-operations/llm-gateway-operations
+
+      - alert: GatewayProviderDown
+        # Every observed model of this provider is down, so the provider itself is
+        # unusable rather than impaired. min() over the pair series is 2 only when no
+        # pair is below it, since 2 is the worst value the gauge takes.
+        expr: min by (provider_name) (gateway_provider_health) == 2
         for: 2m
         labels:
           severity: critical
           component: provider
+          provider: '{{ $labels.provider_name }}'
         annotations:
-          summary: 'Provider {{ $labels.provider_name }} is down'
+          summary: 'Provider {{ $labels.provider_name }} is down for every model it serves'
           description: >-
-            Four or more consecutive failures. Teams whose priority chain reaches another
-            provider that serves the same model tier will fail over automatically; teams
-            with only this provider in their chain are receiving 503s. Check which tiers
-            name this provider in config/models.yaml.
+            Not one model of this provider is answering, so failover is the only thing
+            keeping traffic served. Teams whose priority chain reaches another provider
+            for the same tier are covered; teams with only this provider are receiving
+            503s for everything. Check which tiers name it in config/models.yaml.
           dashboard: http://localhost:3000/d/gw-operations/llm-gateway-operations
 
       - alert: GatewayCircuitBreakerOpen

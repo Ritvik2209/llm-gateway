@@ -244,25 +244,35 @@ async def metrics() -> Response:
 async def admin_health(
     _admin: dict[str, Any] = Depends(verify_admin_key),
 ) -> dict[str, dict[str, object]]:
-    """Return current provider health statuses."""
+    """Return current provider health, per provider and per provider-model pair.
+
+    The provider level keeps the aggregate an operator wants first — is this provider
+    usable, and is its circuit closed — while ``models`` carries the detail that aggregate
+    is computed from. Both are needed: the aggregate alone cannot say which model is
+    failing, and the detail alone makes the common question a summing exercise.
+    """
     response: dict[str, dict[str, object]] = {}
     for provider_name in health_monitor.providers:
-        provider_health = health_monitor.provider_health.get(provider_name)
+        models: dict[str, object] = {}
+        for model in sorted(health_monitor.models_for(provider_name)):
+            model_health = health_monitor.provider_health[(provider_name, model)]
+            models[model] = {
+                "status": model_health.status,
+                "last_check_time": (
+                    model_health.last_check_time.isoformat()
+                    if model_health.last_check_time
+                    else None
+                ),
+                "consecutive_failures": model_health.consecutive_failures,
+                "recent_latencies": model_health.recent_latencies,
+                "error_rate": model_health.error_rate,
+            }
+
         response[provider_name] = {
             "status": health_monitor.get_status(provider_name),
             "circuit_breaker_state": circuit_breaker.get_state(provider_name),
-            "last_check_time": (
-                provider_health.last_check_time.isoformat()
-                if provider_health and provider_health.last_check_time
-                else None
-            ),
-            "consecutive_failures": (
-                provider_health.consecutive_failures if provider_health else 0
-            ),
-            "recent_latencies": (
-                provider_health.recent_latencies if provider_health else []
-            ),
-            "error_rate": provider_health.error_rate if provider_health else 0.0,
+            "probe_model": health_monitor.health_check_models.get(provider_name),
+            "models": models,
         }
     return response
 
@@ -766,7 +776,13 @@ async def call_chat_with_fallback(
             if provider_at_fault:
                 circuit_breaker.record_failure(provider_name)
                 # Real traffic is the cheapest health signal there is, so feed it back.
-                health_monitor.record_request_outcome(provider_name, succeeded=False)
+                # Recorded against the physical model actually attempted, not the logical
+                # tier the caller asked for: a tier is not a thing a provider can fail.
+                health_monitor.record_request_outcome(
+                    provider_name,
+                    physical_model,
+                    succeeded=False,
+                )
 
             if isinstance(exc, ProviderError) and not exc.retryable:
                 # Trying the next provider would not help either: rejected credentials
@@ -791,6 +807,7 @@ async def call_chat_with_fallback(
         circuit_breaker.record_success(provider_name)
         health_monitor.record_request_outcome(
             provider_name,
+            physical_model,
             succeeded=True,
             latency=elapsed,
         )
@@ -1008,6 +1025,7 @@ async def chat(
                         app.state.circuit_breaker.record_failure(selected_provider_name)
                         health_monitor.record_request_outcome(
                             selected_provider_name,
+                            selected_model,
                             succeeded=False,
                         )
 
@@ -1039,6 +1057,7 @@ async def chat(
                 app.state.circuit_breaker.record_success(selected_provider_name)
                 health_monitor.record_request_outcome(
                     selected_provider_name,
+                    selected_model,
                     succeeded=True,
                     latency=first_chunk_latency,
                 )

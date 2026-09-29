@@ -81,10 +81,14 @@ CIRCUIT_BREAKER_STATE = Gauge(
 # dashboard or alert — could not see it. Encoded higher-is-worse like the circuit breaker
 # gauge above, with -1 for a provider that has not been observed yet, so "not yet known" is
 # distinguishable from "healthy" rather than both reading as zero.
+# Labelled by pair, not by provider: one provider serves several models and can be
+# quota-exhausted on one while serving another normally. Aggregating to a provider view
+# is a query concern (min/max by provider_name); collapsing it here would throw the
+# distinction away before anything could read it.
 PROVIDER_HEALTH_STATE = Gauge(
     "gateway_provider_health",
-    "Provider health: -1 unknown, 0 healthy, 1 degraded, 2 down.",
-    ["provider_name"],
+    "Provider-model health: -1 unknown, 0 healthy, 1 degraded, 2 down.",
+    ["provider_name", "model"],
 )
 
 TOKENS_TOTAL = Counter(
@@ -134,9 +138,9 @@ PROVIDER_HEALTH_STATE_VALUES = {
 }
 
 
-def set_provider_health_state(provider_name: str, state: str) -> None:
-    """Publish a provider's health so alerts and dashboards can read it."""
-    PROVIDER_HEALTH_STATE.labels(provider_name=provider_name).set(
+def set_provider_health_state(provider_name: str, model: str, state: str) -> None:
+    """Publish a provider-model pair's health so alerts and dashboards can read it."""
+    PROVIDER_HEALTH_STATE.labels(provider_name=provider_name, model=model).set(
         PROVIDER_HEALTH_STATE_VALUES.get(state, -1)
     )
 

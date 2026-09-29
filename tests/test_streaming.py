@@ -198,7 +198,7 @@ def test_streaming_failure_before_first_chunk_feeds_breaker_and_health(monkeypat
 
     assert circuit_breaker.get_state("mock") == "closed"
     assert circuit_breaker._get_provider_state("mock")["failure_count"] == 1
-    assert health_monitor.provider_health["mock"].consecutive_failures == 1
+    assert health_monitor.provider_health[("mock", "mock-model")].consecutive_failures == 1
     assert health_monitor.get_status("mock") == "degraded"
 
 
@@ -263,7 +263,7 @@ def test_streaming_success_records_success_and_time_to_first_chunk(monkeypatch):
     # One latency sample, and it is time to first chunk rather than total stream
     # duration: the stub sleeps nowhere, so both are small, but only the first is a
     # measure of provider responsiveness rather than of output length.
-    assert len(health_monitor.provider_health["mock"].recent_latencies) == 1
+    assert len(health_monitor.provider_health[("mock", "mock-model")].recent_latencies) == 1
 
 
 def test_streaming_failure_not_the_providers_fault_spares_the_circuit(monkeypatch):
@@ -287,7 +287,7 @@ def test_streaming_failure_not_the_providers_fault_spares_the_circuit(monkeypatc
 
     assert circuit_breaker._get_provider_state("mock")["failure_count"] == 0
     assert circuit_breaker.get_state("mock") == "closed"
-    assert "mock" not in health_monitor.provider_health
+    assert ("mock", "mock-model") not in health_monitor.provider_health
 
 
 # ---------------------------------------------------------------------------
