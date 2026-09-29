@@ -40,6 +40,9 @@ Model authorization     model ∈ team.allowed_models           403 if not allow
 Rate limiting           requests + tokens, sliding 60s        429 + Retry-After
   │
   ▼
+Content policy          blocked_patterns, every message       400, no provider called
+  │
+  ▼
 Budget reservation      reserve worst-case cost atomically    402 if it will not fit
   │                     ≥80% → X-Budget-Warning header
   ▼
