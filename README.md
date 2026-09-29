@@ -6,6 +6,8 @@ A self-hosted API gateway that sits between internal teams and multiple LLM prov
 
 This is a portfolio project, built to demonstrate the production-style patterns that sit around an LLM API rather than the model call itself: multi-provider fallback, circuit breaking, cost control, and metrics. Every number in this README comes from an actual measurement or a constant in the source, and the [Known Limitations](#known-limitations) section documents the gaps that testing exposed rather than hiding them. The load-test results were produced against the running stack, and the resilience behavior is covered by an integration suite that drives the full HTTP path. It is intended to be read as an honest engineering artifact, including the parts that are unfinished.
 
+> **[Architecture &amp; design record &rarr;](docs/ARCHITECTURE.md)** &mdash; the full system design: request lifecycle, routing, enforcement and resilience with diagrams, the measured performance numbers and how they were taken, and the trade-offs behind each decision. Read that if you want the *why*; this README covers running it.
+
 ## Features
 
 - **Multi-provider routing** across three implemented providers: **Ollama** (local models), **Groq** (hosted inference), and a built-in **Mock** provider for deterministic testing.
