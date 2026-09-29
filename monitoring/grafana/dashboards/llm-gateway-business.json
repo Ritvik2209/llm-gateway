@@ -151,6 +151,68 @@
       ]
     },
     {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Cost per team per day",
+      "description": "Spend per team over a rolling 24 hours. This answers a different question from the hourly spend rate beside it: that one shows burn granularity, this one shows the daily run rate a budget owner is billed against. Expect $0 for a team's first minute of traffic. A labelled counter has no series until its first increment, so it is born already carrying a value and increase() has no earlier sample to subtract; it reports the real figure once the series has spanned two scrapes. Pre-creating the children at zero is not an option here the way it was for the config-reload counter, because team x provider x model is unbounded and not known before a request arrives.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(gateway_cost_usd_total[24h])) by (team_id)",
+          "legendFormat": "{{team_id}}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
       "id": 3,
       "type": "timeseries",
       "title": "Spend rate by team",
@@ -160,7 +222,7 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
+        "x": 12,
         "y": 9,
         "w": 12,
         "h": 8
@@ -231,8 +293,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 9,
+        "x": 0,
+        "y": 17,
         "w": 12,
         "h": 8
       },
@@ -302,7 +364,7 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
+        "x": 12,
         "y": 17,
         "w": 12,
         "h": 8
@@ -373,9 +435,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 17,
-        "w": 12,
+        "x": 0,
+        "y": 25,
+        "w": 24,
         "h": 8
       },
       "fieldConfig": {
