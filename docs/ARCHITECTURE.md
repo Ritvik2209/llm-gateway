@@ -9,7 +9,7 @@ a model.
 |---|---|
 | Gateway overhead | **1.67 ms** mean (target: <10 ms) |
 | Throughput ceiling | **~450 req/s** single process |
-| Tests | 171, offline, no credentials |
+| Tests | 172, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
 | Application code | 2,624 lines across 21 modules |
 
@@ -130,6 +130,11 @@ provider that will reject the model.
 a different physical model per provider. `chat-general` is `openai/gpt-oss-20b` on Groq and
 `llama3.2` on Ollama. The caller names the tier; the gateway rebinds the outbound request
 per candidate.
+
+Two tiers cross providers, and they express *different* trades — which is the reason a tier
+maps per provider rather than naming one model. `chat-general` falls back from hosted to
+local, trading latency for availability. `chat-large` falls back from Groq's
+`openai/gpt-oss-120b` to local inference, trading capability for it.
 
 ```mermaid
 flowchart TD
@@ -276,6 +281,11 @@ The pair-level key matters because tiers made a provider able to fail on one mod
 serving another normally. A provider counts as **down** only when *every* model it serves is
 down; one failing model makes it **degraded**.
 
+Groq serves two models, so this is exercised rather than theoretical, and the separation is
+not merely bookkeeping: `openai/gpt-oss-120b` measured **0.91 s** against `openai/gpt-oss-20b`
+at **0.64–0.79 s**. A per-provider average reports one number for two models that do not
+behave alike.
+
 ### Streaming
 
 Streaming failures feed the breaker and health exactly as non-streaming ones do. They
@@ -419,10 +429,10 @@ But it is a real property, and it is the honest answer to "how does this scale?"
 | Health → routing | by design | The breaker is the authority on whether to attempt; health is observational. Coupling them lets a bad signal black-hole traffic. |
 | Token bucket | **diverges** | The spec says token bucket; this is a sliding window. A bucket permits bursts up to its depth; a window does not. The window was chosen for multi-tenant fairness — but it *is* a divergence. |
 
-> **Currently latent.** `config/models.yaml` maps one model to each provider today. Per-provider-model
-> health is therefore correct, tested and live — but not exercised by the running
-> configuration, since every provider has a single pair. It becomes observable the moment a
-> second model is added to any provider.
+> **A note on pricing as a hard dependency.** Adding a model to `config/models.yaml` without
+> adding it to `MODEL_PRICING` makes every request for it fail closed with a `500` rather
+> than serving it unmetered. Budget enforcement that silently stops applying to one model
+> is worse than a refusal that says so.
 
 ---
 
@@ -533,6 +543,6 @@ Counts of tests, metrics, panels, rules and endpoints were taken from the source
 from memory. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
-Scope as documented: 171 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
-3 inhibitions, 11 endpoints, 3 providers, 4 teams, 2,624 lines of application code and
-2,749 lines of tests across 28 commits.
+Scope as documented: 172 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
+3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
+roughly 2,650 lines of application code against 2,800 lines of tests across 30 commits.
