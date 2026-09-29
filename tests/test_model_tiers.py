@@ -324,3 +324,45 @@ def test_a_real_failure_is_counted_as_a_fallback(monkeypatch):
     assert response.json()["provider"] == "ollama"
     assert groq.models_requested  # it was attempted, and failed
     assert read_fallback("tier-team", "groq", "ollama") == before + 1
+
+
+def test_an_unpriced_tier_member_is_named_in_the_error_not_the_tier(monkeypatch):
+    """The message has to name the model that needs pricing, not the name asked for.
+
+    A tier is never priced; the physical models it resolves to are. Reporting the tier
+    sends whoever reads the error to add a MODEL_PRICING entry for the tier, which would
+    not fix anything and would leave the real gap open. The tier is still named, as the
+    reason that model was reachable.
+    """
+    client, _groq, _ollama = build(monkeypatch)
+
+    # A tier whose Groq member has no price. Routing never happens: the request fails
+    # closed at the reservation, because a model that cannot be metered cannot be served
+    # without abandoning budget enforcement for it.
+    monkeypatch.setattr(
+        main_module.app.state,
+        "model_catalog",
+        ModelCatalog(
+            providers={
+                "groq": {"openai/gpt-oss-20b", "unpriced-model"},
+                "ollama": {"llama3.2"},
+            },
+            tiers={"chat-unpriced": {"groq": "unpriced-model", "ollama": "llama3.2"}},
+        ),
+    )
+    monkeypatch.setitem(TEAMS["tier-key"], "allowed_models", ["chat-unpriced"])
+
+    response = client.post(
+        "/v1/chat",
+        headers=HEADERS,
+        json={
+            "model": "chat-unpriced",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 10,
+        },
+    )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert "unpriced-model" in detail
+    assert "chat-unpriced" in detail

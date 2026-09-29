@@ -896,13 +896,19 @@ async def chat(
             # An unpriced model cannot be metered, so serving it would mean abandoning
             # budget enforcement for that request. Fail closed, and say why: this
             # previously surfaced as a bare 500 from deep inside cost accounting.
-            logger.error("Cannot price model %s: %s", request.model, exc)
+            #
+            # The message reports the physical model the exception names, not the name the
+            # caller used. With a tier those differ, and reporting the tier sends whoever
+            # reads it to add a pricing entry for the tier — which is never the fix, since
+            # tiers are not billed and the models they resolve to are. The tier is still
+            # named, as the reason that model was reachable at all.
+            logger.error("Cannot price request for %s: %s", request.model, exc)
+            detail = f"Budget cannot be enforced: {exc}"
+            if app.state.model_catalog.is_tier(request.model):
+                detail += f' Requested tier "{request.model}" can resolve to it.'
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "Budget cannot be enforced: no pricing configured for model "
-                    f'"{request.model}".'
-                ),
+                detail=detail,
             ) from exc
 
         budget_allowed, _spend_before, is_budget_warning = await reserve_budget(

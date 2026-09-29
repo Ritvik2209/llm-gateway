@@ -11,6 +11,10 @@
 providers:
   groq:
     - "openai/gpt-oss-20b"
+    # Same family, larger. Declared so that Groq serves more than one model, which is
+    # what makes provider health meaningful per provider-model pair rather than per
+    # provider: a quota exhausted on one model says nothing about the other.
+    - "openai/gpt-oss-120b"
 
   ollama:
     - "llama3.2"
@@ -35,6 +39,14 @@ tiers:
   # Ollama 2.88s, so falling back trades latency for availability at zero token cost.
   chat-general:
     groq: "openai/gpt-oss-20b"
+    ollama: "llama3.2"
+
+  # The capable tier: Groq's larger model, with local inference as the fallback rather
+  # than a second hosted model. Falling back here trades capability for availability,
+  # which is a different trade from chat-general's latency-for-availability — and it is
+  # the reason a tier maps per provider instead of naming one model.
+  chat-large:
+    groq: "openai/gpt-oss-120b"
     ollama: "llama3.2"
 
   # Local only, for traffic that must not leave the host.

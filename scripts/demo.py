@@ -97,6 +97,37 @@ def describe(response: httpx.Response, elapsed: float) -> str:
     return f"HTTP {response.status_code} in {elapsed:.2f}s  {detail}"
 
 
+def wait_for_series(
+    client: httpx.Client,
+    query: str,
+    predicate,
+    limit: float = 25.0,
+) -> list:
+    """Poll Prometheus until a matching series appears, or the limit elapses.
+
+    The demo creates a condition and then asserts on it, but Prometheus only learns of it
+    at the next scrape - 5s by default, and the series is absent until then rather than
+    present with an old value. Querying immediately is a race the demo loses on a freshly
+    started stack, which is precisely the stack anyone runs it on for the first time.
+    Returning whatever was last seen on timeout keeps the failure a normal failed check
+    rather than an exception.
+    """
+    deadline = time.time() + limit
+    rows: list = []
+    announced = False
+    while time.time() < deadline:
+        rows = client.get(
+            f"{PROMETHEUS}/api/v1/query", params={"query": query}
+        ).json()["data"]["result"]
+        if predicate(rows):
+            return rows
+        if not announced:
+            print("      waiting for Prometheus to scrape the new series...")
+            announced = True
+        time.sleep(1.0)
+    return rows
+
+
 def patch_limits(client: httpx.Client, team: str, **limits) -> dict:
     response = client.patch(
         f"{GATEWAY}/admin/teams/{team}", headers=ADMIN, json=limits
@@ -350,9 +381,13 @@ def demo_error_classification(client: httpx.Client) -> None:
         client.post(f"{GATEWAY}/admin/mock/toggle-failure", headers=ADMIN)
         print("      mock provider restored")
 
-    errors = client.get(f"{PROMETHEUS}/api/v1/query", params={
-        "query": "gateway_errors_total"
-    }).json()["data"]["result"]
+    errors = wait_for_series(
+        client,
+        "gateway_errors_total",
+        lambda rows: any(
+            "Provider" in (row["metric"].get("error_type") or "") for row in rows
+        ),
+    )
     if errors:
         print("\n    error types recorded (classified, not a single generic label):")
         for row in errors:

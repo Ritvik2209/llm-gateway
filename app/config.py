@@ -35,6 +35,13 @@ MODEL_PRICING = {
         "input_price_per_1k": 0.000075,
         "output_price_per_1k": 0.0003,
     },
+    # Adding a model to config/models.yaml without adding it here makes every request for
+    # it fail closed with a 500 rather than serving it unmetered: budget enforcement that
+    # silently stops applying to one model is worse than a refusal that says why.
+    "openai/gpt-oss-120b": {
+        "input_price_per_1k": 0.00015,
+        "output_price_per_1k": 0.00075,
+    },
     "mock-model": {
         "input_price_per_1k": 0.0,
         "output_price_per_1k": 0.0,
