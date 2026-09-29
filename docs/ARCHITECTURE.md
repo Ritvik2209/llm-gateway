@@ -9,7 +9,7 @@ a model.
 |---|---|
 | Gateway overhead | **1.67 ms** mean (target: <10 ms) |
 | Throughput ceiling | **~450 req/s** single process |
-| Tests | 172, offline, no credentials |
+| Tests | 186, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
 | Application code | 2,624 lines across 21 modules |
 
@@ -87,26 +87,29 @@ sequenceDiagram
   G->>G: 2. Authorize model (allowed_models)
   G->>R: 3. Rate limit — one Lua eval
   R-->>G: allowed, limit_kind, remaining
-  G->>G: 4. Estimate worst-case cost
-  G->>R: 5. Reserve budget (INCRBYFLOAT)
+  G->>G: 4. Content policy — blocked_patterns
+  G->>G: 5. Estimate worst-case cost
+  G->>R: 6. Reserve budget (INCRBYFLOAT)
   R-->>G: allowed / over cap
-  G->>G: 6. Enrich (team system prompt)
-  G->>G: 7. Route — allowlist → catalog → breaker
-  G->>P: 8. Call, with retry + fallback
+  G->>G: 7. Enrich — mandatory + default prompts
+  G->>G: 8. Route — allowlist → catalog → breaker
+  G->>P: 9. Call, with retry + fallback
   P-->>G: response or typed error
-  G->>R: 9. Reconcile actual vs reserved
+  G->>R: 10. Reconcile actual vs reserved
+  G->>G: 11. Append disclaimer
   G->>G: record breaker, health, metrics
   G-->>C: 200 / 4xx / 402 / 503
 ```
 
-Steps 1–7 are the gateway's own work and account for the 1.67 ms overhead figure; step 8
-is provider time and is measured separately.
+Steps 1–8 and 11 are the gateway's own work and account for the 1.67 ms overhead figure;
+step 9 is provider time and is measured separately.
 
 | Gate | Rejects with | Why it sits here |
 |---|---|---|
 | Authenticate | `401` | Cheapest possible check; no state read at all. |
 | Authorize model | `403` | In-memory set membership. Rejecting here means an unauthorized model never touches Redis. |
 | Rate limit | `429` | One Redis round trip. Must precede budget, or a throttled team still moves the budget counter. |
+| Content policy | `400` | After the limit, because scanning costs work proportional to prompt size. Before the budget, so blocked content moves no counter and reaches no provider. |
 | Budget reserve | `402` | Reserves worst-case cost *before* the call, so the cap holds under concurrency. |
 | Route | `503` | Needs the model resolved and breaker state read; no point before the request is known to be payable. |
 
@@ -225,6 +228,40 @@ There is no lock and no read-modify-write; correctness comes from `INCRBYFLOAT` 
 atomic and every path having an inverse. An 80% crossing sets an `X-Budget-Warning` header
 rather than failing. A floating-point epsilon of `1e-9` guards the comparison so accumulated
 rounding cannot refuse a request that is exactly at the cap.
+
+### Policy enrichment
+
+The gateway is the one place every team's traffic passes through, which makes it the place
+to enforce rules that would otherwise be reimplemented — and forgotten — by every calling
+service. Four policies are configurable per team, and they divide on one axis that matters
+more than the feature list: **whether the caller may override them**.
+
+| Setting | Kind | Behaviour |
+|---|---|---|
+| `system_prompt` | default | Injected only when the caller sent no system message. |
+| `mandatory_system_prompt` | **policy** | Injected first, always. No request shape removes it. |
+| `response_disclaimer` | policy | Appended to the response; a final chunk when streaming. |
+| `blocked_patterns` | policy | `400` before any provider is called. |
+
+> **The distinction is the feature.** Before this, only the default existed — and it read
+> like enforcement without being it. Any system message from the caller, not even a
+> conflicting one, silently dropped the team's configured prompt. Demonstrated on the
+> running system: a team configured to answer only in French returned English as soon as
+> the caller sent `{"role":"system","content":"Be terse."}`. A caller did not need to know
+> the policy existed to defeat it.
+
+**What "mandatory" does and does not claim.** It guarantees the instruction reaches the
+provider — no caller-supplied message shape removes it. It does not guarantee the model
+obeys it; prompt-level instruction is not a security boundary. Content that must not be
+sent at all belongs in `blocked_patterns`, which the gateway enforces rather than requests.
+
+Patterns are validated when the config loads, not compiled per request. Content policy is
+hand-written like the rest of the config, so a malformed regex is a routine mistake —
+validating at load hands it to the validate-before-apply path, which refuses the file and
+keeps the previous config serving, instead of making it a `500` on live traffic.
+
+The disclaimer is applied **after** accounting. It is gateway text, so billing the team for
+tokens the model never generated would overstate their spend.
 
 ## 6. Resilience
 
@@ -422,7 +459,7 @@ But it is a real property, and it is the honest answer to "how does this scale?"
 
 | Item | State | Reasoning |
 |---|---|---|
-| Request enrichment | partial | Team system-prompt injection works; compliance disclaimers and content filters are not built. The governance leg is incomplete. |
+| Output-side content filter | **not built** | Filtering *input* is cheap and certain. Filtering *output* on a stream is not: the tokens are already sent by the time you could judge them. Buffering defeats streaming; per-chunk filtering misses anything spanning a boundary. Deliberately skipped rather than half-done. |
 | Streaming fallback | partial | A mid-stream failure genuinely cannot fail over — bytes are already sent. A failure *before* the first chunk could, and does not yet. |
 | OpenTelemetry tracing | deferred | Metrics answer the questions this system is asked. Distributed tracing earns its cost across service boundaries; there is one service here. |
 | Priority queues | deferred | Meaningful only under sustained saturation. At 450 req/s against providers serving 1.5 req/s, the gateway is never the queue. |
@@ -511,13 +548,26 @@ artifact becoming an outage. The breaker reacts on evidence of actual failed att
 Keeping them separate costs some reaction speed and buys a failure mode I would rather not
 have.
 
+**How do you stop a caller bypassing your policy prompt?**
+By separating two things that looked like one. `system_prompt` is a *default* — injected
+only when the caller sent none, and overridable on purpose. `mandatory_system_prompt` is a
+*policy* — injected first, and no request shape removes it. That distinction exists because
+the original behaviour was a default that read like enforcement: any system message, not
+even a conflicting one, silently dropped the team's prompt. I demonstrated it on the running
+system before fixing it — a team configured to answer only in French returned English the
+moment the caller sent their own system message. What I will not claim is that a mandatory
+prompt makes the model obey; it guarantees the instruction reaches the provider, nothing
+more. Content that must not be sent at all goes in `blocked_patterns`, which the gateway
+enforces rather than requests.
+
 **What is the weakest part of this system?**
-Request enrichment. A gateway's purpose includes being the policy enforcement point, and
-this one enforces identity, model authorization, rate, budget and routing — but no content or
-compliance policy at all. Team system prompts are injected; disclaimers and content filters
-are not built. That is the governance leg, and it is the gap I would close next. After that,
-the pre-first-chunk streaming fallback, which is now cheap because the streaming errors are
-typed.
+Output-side content filtering, which I deliberately did not build. Filtering input is cheap
+and certain — reject before paying for a provider call. Filtering output on a stream is not:
+by the time you could judge a token you have already sent it. Buffering the whole response
+defeats the point of streaming, and per-chunk filtering misses anything spanning a chunk
+boundary. Both are worse than being honest about the gap. After that, the pre-first-chunk
+streaming fallback — a mid-stream failure genuinely cannot fail over, but one before the
+first byte could, and that is now cheap because streaming errors are typed.
 
 **What did you get wrong and have to fix?**
 Several things, and the pattern is more interesting than any one of them. Four controls
@@ -543,6 +593,6 @@ Counts of tests, metrics, panels, rules and endpoints were taken from the source
 from memory. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
-Scope as documented: 172 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
+Scope as documented: 186 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
 3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
-roughly 2,650 lines of application code against 2,800 lines of tests across 30 commits.
+roughly 2,800 lines of application code against 3,100 lines of tests across 31 commits.
