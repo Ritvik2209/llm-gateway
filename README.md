@@ -13,12 +13,12 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 - **Redis-backed rate limiting on two dimensions** — requests per minute and tokens per minute — over a sliding 60-second window. Both limits are evaluated in a single Lua script, so a request rejected on tokens does not consume a request slot. Rejections name which limit was hit.
 - **Redis-backed budget enforcement** with a monthly per-team spend cap. Each request's worst-case cost is reserved atomically *before* the provider call and reconciled against actual usage afterwards, so the cap is a hard limit even under concurrency. An 80% crossing sets a warning header.
 - **Per-team configuration** — API key, allowed models, provider priority, an optional injected system prompt, request rate, token rate, and monthly budget.
-- **Prometheus + Grafana observability**, with the datasource and a five-panel dashboard provisioned as code so the stack comes up already wired.
+- **Prometheus + Grafana observability**, with the datasource and four dashboards (29 panels) provisioned as code so the stack comes up already wired, plus eight alert rules routed through Alertmanager.
 - **Admin API** — view every team's limits, read live usage against each limit, adjust limits at runtime, and read an audit trail of who changed what. Runtime changes are written back into `config/teams.yaml`, so the file stays the single source of truth and the running policy cannot silently diverge from the declared one.
 - **Config hot reload** — team and model config is re-read when the files change, validated before it is applied, and swapped in whole. A malformed edit is rejected and the running config keeps serving, so a YAML typo cannot cause an outage. Also exposed as an explicit admin endpoint.
 - **One-command setup** via Docker Compose (gateway, Redis, Prometheus, Grafana).
 - **Classified retry and fallback** — provider failures are typed rather than stringly-wrapped, so a rejected credential fails immediately instead of consuming 3.5s of backoff, a rejected request does not count against the provider that correctly refused it, and a rate limit the provider says will outlast the backoff budget fails over at once instead of retrying into a wall.
-- **Exponential backoff** on retryable provider calls, and **quota-aware health monitoring**: provider health is learned passively from real request outcomes, and synthetic probes are spent only where there is no cheaper signal — a provider never seen, or one whose circuit is open and therefore receiving no traffic.
+- **Exponential backoff** on retryable provider calls, and **quota-aware health monitoring**: provider health is learned passively from real request outcomes, and synthetic probes are spent only where there is no cheaper signal — a provider never seen, or one whose circuit is open and therefore receiving no traffic. Health is keyed on the provider-model pair, so a provider quota-exhausted on one model is not marked down for the models it is still serving.
 
 ## Architecture
 
@@ -88,7 +88,7 @@ Thresholds are the defaults in `app/circuit_breaker.py`: `failure_threshold=4`, 
 |---|---|---|
 | `POST` | `/v1/chat` | Unified chat completion |
 | `GET` | `/health` | Liveness check |
-| `GET` | `/admin/health` | Per-provider status, circuit state, latencies, error rate — **admin key required** |
+| `GET` | `/admin/health` | Provider status and circuit state, with per-provider-model health nested beneath each — **admin key required** |
 | `GET` | `/metrics` | Prometheus exposition |
 | `GET` | `/admin/teams` | Every team's limits, and which fields are runtime-editable — **admin key required** |
 | `GET` | `/admin/teams/{id}/usage` | Live position against request, token and budget limits — **admin key required** |
@@ -176,9 +176,9 @@ pip install -r requirements.txt
 pytest
 ```
 
-**140 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, health monitoring, streaming, metrics, and system-prompt enrichment.
+**171 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, per-provider-model health, streaming resilience, the provider error taxonomy, model tiers, config reload, the admin API, metrics, and system-prompt enrichment.
 
-Sixteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
+Fifteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
 ## Load Test Results
 
@@ -232,34 +232,68 @@ Three details are worth noting, because each is a way a dashboard commonly misle
   provider that was never called.
 
 <!-- The screenshot below is of the Overview dashboard and predates the three purpose-built
-     boards above; retaking it from the Operations dashboard would show more. -->
+     boards above. Grafana's image-renderer plugin is not installed, so retaking it is a
+     manual step: open the Operations dashboard and replace docs/grafana-dashboard.png. -->
 ![Grafana Dashboard](docs/grafana-dashboard.png)
 
-Exported metrics: `gateway_requests_total`, `gateway_request_duration_seconds`, `gateway_errors_total` (labelled by failure class), `gateway_fallback_triggered_total`, `gateway_circuit_breaker_state`, `gateway_tokens_total`, `gateway_cost_usd_total`, `gateway_team_spend_usd`, `gateway_team_budget_usd`.
+Fourteen metrics are exported:
+
+| Metric | What it carries |
+|---|---|
+| `gateway_requests_total` | Requests by team, model, provider, status |
+| `gateway_request_duration_seconds` | Time inside provider calls only |
+| `gateway_request_total_duration_seconds` | End-to-end handler time |
+| `gateway_overhead_seconds` | The gateway's own work, provider time excluded |
+| `gateway_errors_total` | Failures labelled by class from the error taxonomy |
+| `gateway_fallback_triggered_total` | Failovers, counted only when availability forced them |
+| `gateway_circuit_breaker_state` | 0 closed, 1 half-open, 2 open |
+| `gateway_provider_health` | Per provider-model: -1 unknown, 0 healthy, 1 degraded, 2 down |
+| `gateway_tokens_total` | Input and output tokens by team and provider |
+| `gateway_cost_usd_total` | Spend by team, provider, model |
+| `gateway_team_spend_usd` | Month-to-date spend, mirrored from Redis |
+| `gateway_team_budget_usd` | Configured cap, so utilisation is a division |
+| `gateway_config_reloads_total` | Applied and rejected, both pre-created at zero |
+| `gateway_config_loaded_timestamp_seconds` | When the running config was loaded |
+
+All three latency histograms share explicit millisecond-resolution buckets. The
+`prometheus_client` defaults begin at 5ms, which put a sub-5ms workload into one
+undifferentiated bucket and made every percentile report the bucket edge rather than a
+measurement.
 
 Cost is a counter, so spend over any window is a query rather than another metric — `sum(increase(gateway_cost_usd_total[1d])) by (team_id)` gives cost per team per day. Budget utilisation comes from the two gauges, which mirror the authoritative Redis state and are seeded at startup so a restarted gateway does not appear to have reset every budget: `100 * gateway_team_spend_usd / gateway_team_budget_usd`.
 
 ## Alerting
 
-Seven rules in `monitoring/alerts.yml`, evaluated by Prometheus and routed through
+Eight rules in `monitoring/alerts.yml`, evaluated by Prometheus and routed through
 Alertmanager on `:9093`:
 
 | Alert | Fires when |
 |---|---|
 | `GatewayProviderErrorRate` | A provider fails more than 10% of requests for 5m |
-| `GatewayProviderDown` | Health reports a provider down for 2m |
+| `GatewayProviderModelDown` | One provider-model pair has been down for 2m |
+| `GatewayProviderDown` | *Every* model of a provider has been down for 2m |
 | `GatewayCircuitBreakerOpen` | A circuit has been open for 1m |
 | `GatewayTeamApproachingBudget` | A team passes 80% of its monthly cap |
 | `GatewayTeamBudgetExhausted` | A team hits 100% and is being refused with 402 |
 | `GatewayLatencySLABreached` | Gateway overhead P99 exceeds 50ms for 10m |
 | `GatewayConfigReloadRejected` | Config on disk was refused, so it and the running policy have diverged |
 
-Three of these needed more than a threshold. The provider error rate excludes the
+Four of these needed more than a threshold. The provider error rate excludes the
 synthetic `provider="none"` label, or it would page about a provider that was never
 called for a rejection the gateway made itself. The budget rules divide by a guarded
 denominator, because a team with no cap would evaluate to `+Inf` and fire forever. The
 latency rule watches *overhead* rather than end-to-end latency, so it measures the
-gateway's own cost rather than slow inference.
+gateway's own cost rather than slow inference. And the two provider-down rules are
+separated because health is per provider-model: paging "provider is down" for one
+failing model would overstate an impairment as an outage, so that case is a warning
+naming the model and the critical alert requires `min by (provider_name)` to reach
+`down`, meaning no model is still working.
+
+Two inhibitions keep one incident to one page: a provider known to be down suppresses
+its own error-rate alert and its per-model alerts, and an exhausted budget suppresses
+the 80% warning. The health-derived alerts set a `provider` label explicitly, because
+the health metric labels it `provider_name` while the error-rate metric labels it
+`provider` — an `equal` match across two different label names silently never fires.
 
 Annotations say what is happening, whether automatic failover is already absorbing it,
 and where to look next — not a restatement of the expression. Inhibition rules stop one
