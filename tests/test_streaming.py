@@ -433,3 +433,43 @@ async def test_chat_stream_timeout_is_typed_as_a_timeout(client_path, provider, 
         with pytest.raises(ProviderTimeout):
             async for _ in provider.chat_stream(request):
                 pass
+
+
+def test_a_disclaimer_is_emitted_as_a_final_chunk(monkeypatch):
+    """A stream cannot be rewritten, so the disclaimer is an extra chunk at the end.
+
+    The non-streaming path splices it into the body; here it can only be appended after
+    the model's own output, which is the same policy applied the only way the transport
+    allows.
+    """
+    client, _breaker, _health = create_streaming_client(monkeypatch, StubStreamProvider())
+    monkeypatch.setitem(
+        STREAM_TEAMS_CONFIG["streaming-key"],
+        "response_disclaimer",
+        "AI generated.",
+    )
+
+    response = post_stream(client)
+
+    assert response.status_code == 200
+    assert response.text == "one two three\n\nAI generated."
+
+
+def test_a_failed_stream_carries_no_disclaimer(monkeypatch):
+    """Nothing finished, so there is no complete answer to qualify.
+
+    The disclaimer is emitted after the success path's accounting, which a failed stream
+    never reaches — so this falls out of where it sits rather than needing its own guard.
+    """
+    client, _breaker, _health = create_streaming_client(
+        monkeypatch, StubStreamProvider(fail_after=2), raise_server_exceptions=False
+    )
+    monkeypatch.setitem(
+        STREAM_TEAMS_CONFIG["streaming-key"],
+        "response_disclaimer",
+        "AI generated.",
+    )
+
+    response = post_stream(client)
+
+    assert "AI generated." not in response.text

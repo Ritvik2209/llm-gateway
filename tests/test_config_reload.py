@@ -212,3 +212,73 @@ def test_config_endpoint_reports_what_is_in_effect(monkeypatch):
 def test_reload_interval_can_be_disabled():
     """0 leaves the explicit endpoint as the only way to apply an edit."""
     assert config_module.CONFIG_RELOAD_INTERVAL_SECONDS >= 0
+
+
+def test_an_invalid_blocked_pattern_is_rejected_at_load(tmp_path):
+    """A bad regex must fail the load, not the request that happens to hit it.
+
+    Content policy is written by hand like the rest of the config, so a malformed pattern
+    is a routine mistake. Compiling at request time would turn it into a 500 on live
+    traffic for whichever team owned it; compiling at load hands it to the
+    validate-before-apply path, which refuses the file and keeps the previous config
+    serving.
+    """
+    path = tmp_path / "teams.yaml"
+    path.write_text(
+        "teams:\n"
+        '  - team_id: "broken"\n'
+        '    api_key: "broken-key"\n'
+        "    blocked_patterns:\n"
+        '      - "valid pattern"\n'
+        '      - "unclosed ("\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as raised:
+        config_module.load_teams_config(str(path))
+
+    message = str(raised.value)
+    assert "broken" in message
+    assert "unclosed (" in message
+
+
+def test_valid_blocked_patterns_load_as_written(tmp_path):
+    """Patterns are stored as strings, not compiled objects, so the config stays JSON.
+
+    The admin endpoints serialise the team config, and a compiled pattern is not
+    serialisable — it would turn GET /admin/teams into a 500.
+    """
+    path = tmp_path / "teams.yaml"
+    path.write_text(
+        "teams:\n"
+        '  - team_id: "filtered"\n'
+        '    api_key: "filtered-key"\n'
+        "    blocked_patterns:\n"
+        '      - "secret-[0-9]+"\n'
+        '    mandatory_system_prompt: "Policy applies."\n'
+        '    response_disclaimer: "AI generated."\n',
+        encoding="utf-8",
+    )
+
+    teams = config_module.load_teams_config(str(path))
+    team = teams["filtered-key"]
+
+    assert team["blocked_patterns"] == ["secret-[0-9]+"]
+    assert all(isinstance(pattern, str) for pattern in team["blocked_patterns"])
+    assert team["mandatory_system_prompt"] == "Policy applies."
+    assert team["response_disclaimer"] == "AI generated."
+
+
+def test_enrichment_settings_default_to_absent(tmp_path):
+    """A team configured before these settings existed keeps its previous behaviour."""
+    path = tmp_path / "teams.yaml"
+    path.write_text(
+        'teams:\n  - team_id: "plain"\n    api_key: "plain-key"\n',
+        encoding="utf-8",
+    )
+
+    team = config_module.load_teams_config(str(path))["plain-key"]
+
+    assert team["mandatory_system_prompt"] is None
+    assert team["response_disclaimer"] is None
+    assert team["blocked_patterns"] == []

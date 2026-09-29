@@ -31,6 +31,12 @@ from app.config_writer import (
     TeamNotFoundError,
     update_team_limits,
 )
+from app.enrichment import (
+    apply_response_disclaimer,
+    disclaimer_chunk,
+    enrich_request,
+    find_blocked_pattern,
+)
 from app.config import (
     CONFIG_RELOAD_INTERVAL_SECONDS,
     HEALTH_CHECK_INTERVAL_SECONDS,
@@ -524,26 +530,6 @@ def record_cost(
     TEAM_SPEND_USD.labels(team_id=team_id).set(team_spend)
 
 
-def enrich_request_with_team_system_prompt(
-    request: UnifiedChatRequest,
-    team_config: dict[str, Any],
-) -> UnifiedChatRequest:
-    """Prepend the team's system prompt when the caller did not provide one."""
-    system_prompt = team_config.get("system_prompt")
-    if not system_prompt:
-        return request
-
-    has_system_message = any(message.role == "system" for message in request.messages)
-    if has_system_message:
-        return request
-
-    request.messages = [
-        ChatMessage(role="system", content=system_prompt),
-        *request.messages,
-    ]
-    return request
-
-
 def get_allowed_provider_priority(team_config: dict[str, Any]) -> list[str]:
     """Return the team's provider priority filtered by its provider allowlist.
 
@@ -882,6 +868,31 @@ async def chat(
                 headers={"Retry-After": "60"},
             )
 
+        # Content policy sits here on purpose: after the rate limit, before the budget.
+        #
+        # After the limit, because scanning is work proportional to the size of the
+        # prompt, and an unthrottled caller could otherwise turn a large body and a list
+        # of patterns into CPU amplification. Before the budget, because a blocked request
+        # must not move a team's spend counter or reach a provider — the whole point is
+        # that the content never leaves the building.
+        blocked_pattern = find_blocked_pattern(request, team_config)
+        if blocked_pattern is not None:
+            ERRORS_TOTAL.labels(
+                team_id=team_id,
+                provider=request_provider,
+                error_type="content_blocked",
+            ).inc()
+            logger.warning(
+                "Blocked request from %s on pattern %r", team_id, blocked_pattern
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Request blocked by content policy. It matched a pattern configured "
+                    "for this team and was not sent to any provider."
+                ),
+            )
+
         try:
             budget_reservation = estimate_max_cost(
                 model=request.model,
@@ -934,7 +945,7 @@ async def chat(
         if is_budget_warning:
             response.headers["X-Budget-Warning"] = "true"
 
-        request = enrich_request_with_team_system_prompt(request, team_config)
+        request = enrich_request(request, team_config)
         runtime_providers = {
             **app.state.providers,
             OllamaProvider.provider_name: ollama_provider,
@@ -1116,6 +1127,15 @@ async def chat(
                     status="success",
                 ).inc()
 
+                # Emitted last, once the model's own output is complete. A stream cannot
+                # be rewritten after the fact, so the disclaimer is an extra chunk rather
+                # than a modification of the body — and a stream that failed partway
+                # never reaches here, correctly, since it carries no finished answer to
+                # qualify.
+                trailer = disclaimer_chunk(team_config)
+                if trailer is not None:
+                    yield trailer
+
             headers = {}
             if is_budget_warning:
                 headers["X-Budget-Warning"] = "true"
@@ -1198,6 +1218,12 @@ async def chat(
             provider=provider_response.provider,
             status="success",
         ).inc()
+        # Applied after accounting, not before: the disclaimer is gateway text, so billing
+        # the team for tokens the model never generated would overstate their spend.
+        provider_response.content = apply_response_disclaimer(
+            provider_response.content, team_config
+        )
+
         handler_status = "success"
         return provider_response
     except HTTPException:

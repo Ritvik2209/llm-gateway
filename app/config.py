@@ -1,6 +1,7 @@
 """Application configuration loading for the LLM API gateway."""
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,20 @@ def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, An
 
     teams_by_api_key = {}
     for team in raw_config.get("teams", []):
+        blocked_patterns = team.get("blocked_patterns") or []
+        for pattern in blocked_patterns:
+            # Validated here so a malformed pattern is refused by the reload path and the
+            # previous config keeps serving. Compiled lazily at request time instead of
+            # being stored: the admin endpoints serialise this dict, and a compiled
+            # pattern object is not JSON.
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f'Team "{team["team_id"]}" has an invalid blocked_patterns entry '
+                    f'"{pattern}": {exc}'
+                ) from exc
+
         teams_by_api_key[team["api_key"]] = {
             "team_id": team["team_id"],
             "allowed_models": team.get("allowed_models", []),
@@ -109,7 +124,13 @@ def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, An
                 "provider_priority",
                 team.get("allowed_providers", []),
             ),
+            # A default the caller may override by sending their own system message.
             "system_prompt": team.get("system_prompt"),
+            # A policy the caller may not remove. See app/enrichment.py for why these are
+            # two settings rather than one with a flag.
+            "mandatory_system_prompt": team.get("mandatory_system_prompt"),
+            "response_disclaimer": team.get("response_disclaimer"),
+            "blocked_patterns": blocked_patterns,
             "requests_per_minute": team.get("requests_per_minute", 60),
             # 0 disables token limiting, so teams configured before this limit
             # existed keep their previous behaviour.
