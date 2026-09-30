@@ -338,7 +338,7 @@ logged to tell them apart afterwards.
 ## 7. Observability
 
 Fourteen metrics, four dashboards totalling 29 panels, eight alert rules with three
-inhibitions — all provisioned as code.
+inhibitions — all provisioned as code, delivering to Slack.
 
 | Dashboard | Answers | Panels |
 |---|---|---|
@@ -379,6 +379,35 @@ label used for the gateway's own rejections. The budget rules divide by a guarde
 denominator, because a team with no cap evaluates to `+Inf` and fires forever. And the two
 provider-down rules are separated because health is per-pair: paging "provider is down" for
 one failing model overstates an impairment as an outage.
+
+### Delivery, and where the credential lives
+
+Alerts are delivered to Slack. The interesting part is not the integration — a POST to a URL
+is a solved problem — but the two things around it that are easy to get wrong.
+
+**The credential is not in the config.** A Slack incoming-webhook URL is a bearer
+credential: anyone holding it can post into the channel, with no other authentication. And
+`alertmanager.yml` is committed to a public repository. So the receiver reads `api_url_file`,
+pointing at a path mounted into the container from a gitignored file, with a committed
+`.example` beside it showing the shape. Because the file is read at notification time rather
+than at config load, rotating the credential is an edit and a restart rather than a config
+change.
+
+**Both routes had to move.** The route tree has a default and a `severity = "critical"`
+sub-route. Switching only the default would have sent warnings to Slack while the alerts
+actually worth waking someone for — a provider down, a budget exhausted — continued to a
+local sink that is not running. A partial cutover that fails *only* for the severe cases is
+worse than not cutting over at all, and it would have looked like success from the warnings
+alone.
+
+Verified against Slack rather than by reading config: opening the mock provider's circuit
+moved `GatewayCircuitBreakerOpen` to firing, and Alertmanager reported
+`alertmanager_notifications_total{integration="slack"} = 1` with every
+`alertmanager_notifications_failed_total{integration="slack"}` series at zero.
+
+A local sink (`scripts/alert_sink.py`) remains the way this path is verified on a machine
+with no Slack credential — it prints exactly what Slack would receive, which is what makes
+the *template* verifiable without a secret. Switching back to it is one word in the route.
 
 ## 8. Control plane
 
@@ -560,6 +589,17 @@ prompt makes the model obey; it guarantees the instruction reaches the provider,
 more. Content that must not be sent at all goes in `blocked_patterns`, which the gateway
 enforces rather than requests.
 
+**Where do your secrets live?**
+Not in the repository, and the alerting credential is the example worth giving because it
+was nearly got wrong. A Slack incoming-webhook URL needs no other authentication — holding it
+is enough to post — and `alertmanager.yml` is committed to a public repo. The obvious
+instruction, "replace the placeholder `api_url` with your real URL", would have published a
+live credential and made rotating it a history rewrite. It reads `api_url_file` instead,
+from a gitignored file mounted into the container, with a committed `.example` showing the
+shape. Provider API keys follow the same rule through `.env`, which is gitignored with an
+`.env.example` beside it. The test suite needs no credential at all, which is why CI runs it
+with no secrets configured.
+
 **What is the weakest part of this system?**
 Output-side content filtering, which I deliberately did not build. Filtering input is cheap
 and certain — reject before paying for a provider call. Filtering output on a stream is not:
@@ -595,4 +635,4 @@ cross-checked against Little's Law.
 
 Scope as documented: 186 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
 3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
-roughly 2,800 lines of application code against 3,100 lines of tests across 31 commits.
+roughly 2,800 lines of application code against 3,100 lines of tests across 37 commits.
