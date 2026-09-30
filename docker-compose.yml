@@ -25,6 +25,9 @@ services:
       - "9093:9093"
     volumes:
       - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # The Slack credential, kept out of the committed config and out of git.
+      # Copy slack_webhook_url.example beside it before starting with the slack receiver.
+      - ./monitoring/alertmanager/slack_webhook_url:/etc/alertmanager/slack_webhook_url:ro
     extra_hosts:
       # The default receiver posts to a sink running on the host, so notifications can be
       # inspected without a Slack credential.

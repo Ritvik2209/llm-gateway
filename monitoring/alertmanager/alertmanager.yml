@@ -50,12 +50,21 @@ receivers:
       - url: http://host.docker.internal:5001/alerts
         send_resolved: true
 
-  # Fully configured apart from the URL. To use it: replace api_url with a real Slack
-  # incoming-webhook URL and change `receiver: webhook` above to `receiver: slack`.
-  # No code change is involved.
+  # Fully configured apart from the credential, which deliberately does not live here.
+  # This file is committed to a public repository, and a Slack incoming-webhook URL is a
+  # bearer credential: anyone holding it can post into the channel. So it is read from a
+  # file that is gitignored and mounted into the container, and the only step to enable
+  # Slack is writing that file and changing `receiver: webhook` above to `receiver: slack`.
+  #
+  #   cp monitoring/alertmanager/slack_webhook_url.example \
+  #      monitoring/alertmanager/slack_webhook_url
+  #   # then replace its contents with the real URL
+  #
+  # api_url_file is read at notification time, so rotating the credential is a file edit
+  # and a restart rather than a config change.
   - name: slack
     slack_configs:
-      - api_url: https://hooks.slack.com/services/REPLACE/WITH/YOUR-WEBHOOK
+      - api_url_file: /etc/alertmanager/slack_webhook_url
         channel: '#llm-gateway-alerts'
         send_resolved: true
         title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'

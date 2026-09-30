@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# Alertmanager Slack credential — a bearer token for posting into a channel.
+# The .example file beside it is committed; this one never is.
+monitoring/alertmanager/slack_webhook_url
+
 # Virtual environments
 venv/
 .venv/
