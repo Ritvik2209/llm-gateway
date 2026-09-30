@@ -1,7 +1,9 @@
 route:
-  # Default to the webhook receiver so the stack starts and is verifiable with no
-  # credentials. Switch this to `slack` once a real webhook URL is in place below.
-  receiver: webhook
+  # Slack, reading its credential from the gitignored file mounted beside this config.
+  # Switching back to `webhook` sends everything to the local sink instead, which is how
+  # this path is verified on a machine with no Slack credential — `python
+  # scripts/alert_sink.py` then prints exactly what Slack would receive.
+  receiver: slack
   # Grouping by team and provider as well as alertname means one incident produces one
   # notification per affected tenant rather than one per firing series.
   group_by: ['alertname', 'team_id', 'provider', 'provider_name', 'model']
@@ -12,7 +14,7 @@ route:
   routes:
     - matchers:
         - severity = "critical"
-      receiver: webhook
+      receiver: slack
       # A provider being down or a team being unable to spend is worth repeating sooner.
       repeat_interval: 1h
 
