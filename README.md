@@ -25,6 +25,26 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 
 ## Architecture
 
+The gateway sits between team clients and the providers. It holds no durable state of its own: Redis is the system of record for everything the enforcement path reads and writes, and the monitoring stack scrapes the gateway rather than being called by it.
+
+```mermaid
+flowchart LR
+  C["Team clients<br/>Bearer API key"] --> G
+
+  subgraph GW ["llm-gateway :8000"]
+    G["FastAPI<br/>async, single process"]
+  end
+
+  G -->|"enforcement state"| R[("Redis :6379<br/>windows, budgets, audit")]
+  G -->|"HTTPS"| Q["Groq<br/>hosted"]
+  G -->|"HTTP"| O["Ollama<br/>local CPU"]
+  G -.->|"in-process"| M["Mock<br/>deterministic"]
+
+  P["Prometheus :9090"] -->|"scrape /metrics 5s"| G
+  P --> GR["Grafana :3000<br/>4 dashboards"]
+  P -->|"8 rules"| AM["Alertmanager :9093"]
+```
+
 A request flows through the gateway in a fixed order, failing fast at the first gate it does not pass:
 
 ```
