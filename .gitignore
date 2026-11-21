@@ -7,6 +7,10 @@
 # The .example file beside it is committed; this one never is.
 monitoring/alertmanager/slack_webhook_url
 
+# The demo server's private teams file, holding the real admin key. The template is
+# deploy/teams.example.yaml.
+secrets/
+
 # Virtual environments
 venv/
 .venv/

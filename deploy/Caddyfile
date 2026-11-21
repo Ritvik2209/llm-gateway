@@ -1,0 +1,13 @@
+# HTTPS in front of the demo server. Caddy obtains and renews certificates on its own once
+# both domains point at the server. The domains come from .env (see docker-compose.prod.yml).
+
+{$GATEWAY_DOMAIN} {
+	# Prometheus scrapes /metrics over the internal network. From outside it would publish
+	# every team's id and spend, so it is not served publicly.
+	respond /metrics 404
+	reverse_proxy gateway:8000
+}
+
+{$GRAFANA_DOMAIN} {
+	reverse_proxy grafana:3000
+}

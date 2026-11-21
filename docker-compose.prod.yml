@@ -1,0 +1,77 @@
+# Overrides for the public demo server, applied on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What changes from the local stack, and why:
+#   - Only Caddy publishes ports (80 and 443). Redis, Prometheus and Alertmanager have no
+#     authentication, and on Linux Docker's published ports bypass ufw, so publishing them
+#     would put them on the internet.
+#   - Redis keeps its data on a volume with append-only persistence, so recreating the
+#     container no longer resets every team's spend to zero.
+#   - The gateway runs in demo mode and reads a private teams file from secrets/.
+#   - Grafana gets a real admin password and lets visitors view dashboards without an account.
+#
+# `!reset` needs Docker Compose 2.24.4 or later.
+
+services:
+  redis:
+    ports: !reset []
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  prometheus:
+    ports: !reset []
+    restart: unless-stopped
+
+  alertmanager:
+    ports: !reset []
+    restart: unless-stopped
+
+  grafana:
+    ports: !reset []
+    environment:
+      # No volume, so this password applies on every start: Grafana only reads it when it
+      # creates its database, and without a volume that is every time.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      - GF_SERVER_ROOT_URL=https://${GRAFANA_DOMAIN}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    restart: unless-stopped
+
+  gateway:
+    ports: !reset []
+    environment:
+      - DEMO_MODE=true
+      - DEMO_OUTAGE_SECONDS=${DEMO_OUTAGE_SECONDS:-60}
+      - TEAMS_CONFIG_PATH=/app/secrets/teams.yaml
+      - DEMO_GRAFANA_URL=https://${GRAFANA_DOMAIN}
+    volumes:
+      # Writable, because the admin API writes limit changes back into the teams file.
+      - ./secrets:/app/secrets
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    container_name: gateway-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - GATEWAY_DOMAIN=${GATEWAY_DOMAIN:?set GATEWAY_DOMAIN in .env}
+      - GRAFANA_DOMAIN=${GRAFANA_DOMAIN:?set GRAFANA_DOMAIN in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here; losing them means re-issuing, which Let's Encrypt rate-limits.
+      - caddy-data:/data
+    depends_on:
+      - gateway
+      - grafana
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  caddy-data:
