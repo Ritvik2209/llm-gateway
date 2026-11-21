@@ -15,6 +15,7 @@ from app.models.catalog import ModelCatalog
 from app.models.schemas import ChatMessage, UnifiedChatResponse
 from app.providers.errors import ProviderUnavailable
 from tests.fakes import FakeRedis
+from tests.app_state import set_app_state
 
 
 CATALOG = ModelCatalog(
@@ -89,12 +90,12 @@ def build(monkeypatch, groq_fails=False, ollama_fails=False):
     groq = RecordingProvider("groq", fails=groq_fails)
     ollama = RecordingProvider("ollama", fails=ollama_fails)
 
-    monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS)
-    monkeypatch.setattr(main_module.app.state, "model_catalog", CATALOG)
-    monkeypatch.setattr(
-        main_module.app.state, "redis_client", FakeRedis(decode_responses=True)
+    set_app_state(monkeypatch, "teams_config", TEAMS)
+    set_app_state(monkeypatch, "model_catalog", CATALOG)
+    set_app_state(
+        monkeypatch, "redis_client", FakeRedis(decode_responses=True)
     )
-    monkeypatch.setattr(main_module.app.state, "circuit_breaker", __import__(
+    set_app_state(monkeypatch, "circuit_breaker", __import__(
         "app.circuit_breaker", fromlist=["CircuitBreaker"]
     ).CircuitBreaker())
     monkeypatch.setattr(main_module, "groq_provider", groq)
@@ -339,8 +340,8 @@ def test_an_unpriced_tier_member_is_named_in_the_error_not_the_tier(monkeypatch)
     # A tier whose Groq member has no price. Routing never happens: the request fails
     # closed at the reservation, because a model that cannot be metered cannot be served
     # without abandoning budget enforcement for it.
-    monkeypatch.setattr(
-        main_module.app.state,
+    set_app_state(
+        monkeypatch,
         "model_catalog",
         ModelCatalog(
             providers={

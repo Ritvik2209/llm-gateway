@@ -22,6 +22,7 @@ from app.providers.errors import (
 from app.providers.groq_provider import GroqProvider
 from app.providers.ollama_provider import OllamaProvider
 from tests.fakes import FakeRedis
+from tests.app_state import set_app_state
 
 
 class MockStreamContext:
@@ -170,10 +171,10 @@ def create_streaming_client(monkeypatch, provider, raise_server_exceptions=True)
     circuit_breaker = CircuitBreaker()
     health_monitor = HealthMonitor()
 
-    monkeypatch.setattr(main_module.app.state, "teams_config", STREAM_TEAMS_CONFIG)
-    monkeypatch.setattr(main_module.app.state, "redis_client", FakeRedis(decode_responses=True))
-    monkeypatch.setattr(main_module.app.state, "circuit_breaker", circuit_breaker)
-    monkeypatch.setattr(main_module.app.state, "model_catalog", STREAM_CATALOG)
+    set_app_state(monkeypatch, "teams_config", STREAM_TEAMS_CONFIG)
+    set_app_state(monkeypatch, "redis_client", FakeRedis(decode_responses=True))
+    set_app_state(monkeypatch, "circuit_breaker", circuit_breaker)
+    set_app_state(monkeypatch, "model_catalog", STREAM_CATALOG)
     monkeypatch.setattr(main_module, "health_monitor", health_monitor)
     monkeypatch.setattr(main_module, "mock_provider", provider)
 

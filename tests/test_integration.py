@@ -31,6 +31,7 @@ from app.models.schemas import UnifiedChatResponse
 from app.providers.errors import ProviderAuthError, ProviderRequestRejected
 from app.retry import call_with_retry as real_call_with_retry
 from tests.fakes import FakeRedis
+from tests.app_state import set_app_state
 
 
 CHAT_REQUEST = {
@@ -153,10 +154,10 @@ def create_test_client(monkeypatch):
     redis_client = FakeRedis(decode_responses=True)
     circuit_breaker = CircuitBreaker()
 
-    monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS_CONFIG)
-    monkeypatch.setattr(main_module.app.state, "redis_client", redis_client)
-    monkeypatch.setattr(main_module.app.state, "circuit_breaker", circuit_breaker)
-    monkeypatch.setattr(main_module.app.state, "model_catalog", MODEL_CATALOG)
+    set_app_state(monkeypatch, "teams_config", TEAMS_CONFIG)
+    set_app_state(monkeypatch, "redis_client", redis_client)
+    set_app_state(monkeypatch, "circuit_breaker", circuit_breaker)
+    set_app_state(monkeypatch, "model_catalog", MODEL_CATALOG)
     monkeypatch.setattr(main_module, "call_with_retry", _immediate_retry)
 
     return TestClient(main_module.app), redis_client, circuit_breaker

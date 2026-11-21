@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app import main as main_module
 from app.models.schemas import UnifiedChatResponse
+from tests.app_state import set_app_state
 
 
 TEAM_SYSTEM_PROMPT = "You are a helpful assistant for Team Alpha. Always be concise."
@@ -62,7 +63,7 @@ def create_test_client(monkeypatch, provider):
     async def record_tokens(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS_CONFIG)
+    set_app_state(monkeypatch, "teams_config", TEAMS_CONFIG)
     monkeypatch.setattr(main_module, "ollama_provider", provider)
     monkeypatch.setattr(main_module, "check_rate_limit", allow_request)
     monkeypatch.setattr(main_module, "reserve_budget", allow_budget)
@@ -177,7 +178,7 @@ POLICY_HEADERS = {"Authorization": "Bearer policy-key"}
 
 def create_policy_client(monkeypatch, provider):
     client = create_test_client(monkeypatch, provider)
-    monkeypatch.setattr(main_module.app.state, "teams_config", POLICY_TEAMS)
+    set_app_state(monkeypatch, "teams_config", POLICY_TEAMS)
     return client
 
 

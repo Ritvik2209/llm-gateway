@@ -19,6 +19,7 @@ from app.config_writer import (
 )
 from app.models.catalog import ModelCatalog
 from tests.fakes import FakeRedis
+from tests.app_state import set_app_state
 
 
 TEAMS_YAML = """\
@@ -65,14 +66,14 @@ def build_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module, "MODEL_CATALOG_PATH", str(models_path))
 
     redis_client = FakeRedis(decode_responses=True)
-    monkeypatch.setattr(main_module.app.state, "redis_client", redis_client)
-    monkeypatch.setattr(
-        main_module.app.state,
+    set_app_state(monkeypatch, "redis_client", redis_client)
+    set_app_state(
+        monkeypatch,
         "teams_config",
         main_module.load_teams_config(str(teams_path)),
     )
-    monkeypatch.setattr(
-        main_module.app.state,
+    set_app_state(
+        monkeypatch,
         "model_catalog",
         ModelCatalog(providers={"mock": {"mock-model"}}),
     )

@@ -7,6 +7,7 @@ require an admin-scoped key rather than any valid tenant key.
 from fastapi.testclient import TestClient
 
 from app import main as main_module
+from tests.app_state import set_app_state
 
 
 TEAMS_CONFIG = {
@@ -46,7 +47,7 @@ ADMIN_ENDPOINTS = [
 
 
 def create_test_client(monkeypatch):
-    monkeypatch.setattr(main_module.app.state, "teams_config", TEAMS_CONFIG)
+    set_app_state(monkeypatch, "teams_config", TEAMS_CONFIG)
     return TestClient(main_module.app)
 
 

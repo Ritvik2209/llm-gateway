@@ -17,6 +17,7 @@ from app import config as config_module
 from app import main as main_module
 from app.models.catalog import ModelCatalog
 from tests.fakes import FakeRedis
+from tests.app_state import set_app_state
 
 
 ADMIN_TEAMS = {
@@ -77,15 +78,15 @@ def point_gateway_at(monkeypatch, teams_path, models_path):
     # A successful reload re-publishes every team's spend gauge, which reads Redis. Without
     # the fake, that read went to whatever was listening on localhost:6379: a real Redis
     # if one happened to be running, or about 48 s of connection retries per test if not.
-    monkeypatch.setattr(main_module.app.state, "redis_client", FakeRedis(decode_responses=True))
+    set_app_state(monkeypatch, "redis_client", FakeRedis(decode_responses=True))
 
 
 @pytest.mark.asyncio
 async def test_reload_applies_a_valid_edit(monkeypatch, tmp_path):
     teams_path, models_path = write_config(tmp_path)
     point_gateway_at(monkeypatch, teams_path, models_path)
-    monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(main_module.app.state, "model_catalog", ModelCatalog())
+    set_app_state(monkeypatch, "teams_config", dict(ADMIN_TEAMS))
+    set_app_state(monkeypatch, "model_catalog", ModelCatalog())
 
     result = await main_module.reload_configuration()
 
@@ -104,9 +105,9 @@ async def test_a_malformed_edit_is_rejected_and_the_previous_config_survives(
     """A YAML typo must not become an outage."""
     teams_path, models_path = write_config(tmp_path, teams_yaml=MALFORMED_TEAMS_YAML)
     point_gateway_at(monkeypatch, teams_path, models_path)
-    monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(
-        main_module.app.state,
+    set_app_state(monkeypatch, "teams_config", dict(ADMIN_TEAMS))
+    set_app_state(
+        monkeypatch,
         "model_catalog",
         ModelCatalog(providers={"mock": {"mock-model"}}),
     )
@@ -127,7 +128,7 @@ async def test_a_missing_file_is_rejected_rather_than_emptying_the_config(
     teams_path, models_path = write_config(tmp_path)
     teams_path.unlink()
     point_gateway_at(monkeypatch, teams_path, models_path)
-    monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
+    set_app_state(monkeypatch, "teams_config", dict(ADMIN_TEAMS))
 
     with pytest.raises(main_module.ConfigReloadError):
         await main_module.reload_configuration()
@@ -141,8 +142,8 @@ async def test_config_is_replaced_not_mutated(monkeypatch, tmp_path):
     teams_path, models_path = write_config(tmp_path)
     point_gateway_at(monkeypatch, teams_path, models_path)
     original = dict(ADMIN_TEAMS)
-    monkeypatch.setattr(main_module.app.state, "teams_config", original)
-    monkeypatch.setattr(main_module.app.state, "model_catalog", ModelCatalog())
+    set_app_state(monkeypatch, "teams_config", original)
+    set_app_state(monkeypatch, "model_catalog", ModelCatalog())
 
     await main_module.reload_configuration()
 
@@ -157,7 +158,7 @@ async def test_config_is_replaced_not_mutated(monkeypatch, tmp_path):
 
 
 def test_reload_endpoint_requires_an_admin_key(monkeypatch):
-    monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
+    set_app_state(monkeypatch, "teams_config", dict(ADMIN_TEAMS))
     client = TestClient(main_module.app)
 
     assert client.post("/admin/config/reload").status_code == 401
@@ -167,8 +168,8 @@ def test_reload_endpoint_requires_an_admin_key(monkeypatch):
 def test_reload_endpoint_applies_an_edit(monkeypatch, tmp_path):
     teams_path, models_path = write_config(tmp_path)
     point_gateway_at(monkeypatch, teams_path, models_path)
-    monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(main_module.app.state, "model_catalog", ModelCatalog())
+    set_app_state(monkeypatch, "teams_config", dict(ADMIN_TEAMS))
+    set_app_state(monkeypatch, "model_catalog", ModelCatalog())
     client = TestClient(main_module.app)
 
     response = client.post(
@@ -185,7 +186,7 @@ def test_reload_endpoint_reports_a_rejected_edit_as_409(monkeypatch, tmp_path):
     """409, not 500: the request was fine, the state on disk is not applicable."""
     teams_path, models_path = write_config(tmp_path, teams_yaml=MALFORMED_TEAMS_YAML)
     point_gateway_at(monkeypatch, teams_path, models_path)
-    monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
+    set_app_state(monkeypatch, "teams_config", dict(ADMIN_TEAMS))
     client = TestClient(main_module.app)
 
     response = client.post(
@@ -199,9 +200,9 @@ def test_reload_endpoint_reports_a_rejected_edit_as_409(monkeypatch, tmp_path):
 
 
 def test_config_endpoint_reports_what_is_in_effect(monkeypatch):
-    monkeypatch.setattr(main_module.app.state, "teams_config", dict(ADMIN_TEAMS))
-    monkeypatch.setattr(
-        main_module.app.state,
+    set_app_state(monkeypatch, "teams_config", dict(ADMIN_TEAMS))
+    set_app_state(
+        monkeypatch,
         "model_catalog",
         ModelCatalog(providers={"mock": {"mock-model"}}),
     )
