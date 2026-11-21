@@ -38,6 +38,9 @@ services:
       - GF_SERVER_ROOT_URL=https://${GRAFANA_DOMAIN}
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # Visitors who open the bare Grafana address land on a gateway dashboard rather than
+      # Grafana's generic welcome page.
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/llm-gateway-operations.json
     restart: unless-stopped
 
   gateway:

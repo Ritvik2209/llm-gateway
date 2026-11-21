@@ -93,6 +93,14 @@
      the whole page on a phone instead of scrolling inside its own box. */
   .two > * { min-width: 0; }
   @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+  .dash-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 720px) { .dash-grid { grid-template-columns: 1fr; } }
+  .dash {
+    display: block; padding: 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-2); color: var(--text); text-decoration: none;
+  }
+  .dash:hover, .dash:focus-visible { border-color: var(--accent); }
+  .dash strong { display: block; color: var(--accent); margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -105,7 +113,7 @@
     <div class="links small">
       <a href="https://github.com/Ritvik2209/llm-gateway" target="_blank" rel="noopener">Source on GitHub</a>
       <a href="/docs" target="_blank" rel="noopener">API docs</a>
-      <a id="grafana-link" href="#" target="_blank" rel="noopener" hidden>Live Grafana dashboards</a>
+      <a id="grafana-link" href="#dashboards" hidden>Live Grafana dashboards</a>
     </div>
   </header>
 
@@ -167,7 +175,8 @@
         <li><strong>Ask a question.</strong> Groq answers it.</li>
         <li><strong>Simulate an outage</strong>, then send about five requests. The first few
           take ~3.5 s longer while the gateway retries Groq, then the circuit opens and the
-          fallback becomes instant.</li>
+          fallback becomes instant. The Operations dashboard shows the circuit and the
+          fallbacks.</li>
         <li><strong>Wait for the outage to end.</strong> After the cooldown, the next request
           tests Groq again and the circuit closes.</li>
         <li><strong>Send 25 quick requests.</strong> The team allows a set number per minute,
@@ -177,6 +186,34 @@
       </ol>
     </section>
   </div>
+
+  <section id="dashboards" class="card" aria-labelledby="dash-heading" hidden>
+    <h2 id="dash-heading">Live dashboards</h2>
+    <p class="small muted" style="margin:0 0 12px">Grafana, refreshing every 10 seconds, no
+      login needed. Each opens in a new tab, so you can keep this page beside it.</p>
+    <div class="dash-grid">
+      <a class="dash" data-path="/d/gw-operations" href="#" target="_blank" rel="noopener">
+        <strong>Operations</strong>
+        <span class="small muted">Provider health, the circuit breaker, fallback events and
+          rejections by cause. Watch it during the outage and the burst.</span>
+      </a>
+      <a class="dash" data-path="/d/gw-performance" href="#" target="_blank" rel="noopener">
+        <strong>Performance</strong>
+        <span class="small muted">The gateway's own overhead, measured separately from
+          provider and end-to-end latency.</span>
+      </a>
+      <a class="dash" data-path="/d/gw-business" href="#" target="_blank" rel="noopener">
+        <strong>Business</strong>
+        <span class="small muted">Spend against each team's budget, cost per team per day,
+          and token throughput.</span>
+      </a>
+      <a class="dash" data-path="/d/adxzzmb" href="#" target="_blank" rel="noopener">
+        <strong>Overview</strong>
+        <span class="small muted">The single-screen summary: request rate, errors, latency
+          and circuit state by provider.</span>
+      </a>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -227,7 +264,11 @@
     $("circuit-text").textContent = text;
 
     if (s.grafana_url) {
-      $("grafana-link").href = s.grafana_url;
+      var base = s.grafana_url.replace(/\/$/, "");
+      document.querySelectorAll("#dashboards a[data-path]").forEach(function (a) {
+        a.href = base + a.getAttribute("data-path");
+      });
+      $("dashboards").hidden = false;
       $("grafana-link").hidden = false;
     }
   }

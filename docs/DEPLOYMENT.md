@@ -110,8 +110,9 @@ nc -zv -w 3 <server-ip> 6379    # fails
 nc -zv -w 3 <server-ip> 9090    # fails
 ```
 
-Then open `https://api.example.com/` and follow "What to try" on the page, and open
-`https://grafana.example.com/` to confirm the dashboards load without logging in.
+Then open `https://api.example.com/` and follow "What to try" on the page. Its "Live dashboards"
+section links all four Grafana dashboards; `https://grafana.example.com/` itself should open on
+the Operations dashboard without asking for a login.
 
 ## Updating
 
