@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from app import config as config_module
 from app import main as main_module
 from app.models.catalog import ModelCatalog
+from tests.fakes import FakeRedis
 
 
 ADMIN_TEAMS = {
@@ -73,6 +74,10 @@ def write_config(tmp_path, teams_yaml=VALID_TEAMS_YAML, models_yaml=VALID_MODELS
 def point_gateway_at(monkeypatch, teams_path, models_path):
     monkeypatch.setattr(main_module, "TEAMS_CONFIG_PATH", str(teams_path))
     monkeypatch.setattr(main_module, "MODEL_CATALOG_PATH", str(models_path))
+    # A successful reload re-publishes every team's spend gauge, which reads Redis. Without
+    # the fake, that read went to whatever was listening on localhost:6379: a real Redis
+    # if one happened to be running, or about 48 s of connection retries per test if not.
+    monkeypatch.setattr(main_module.app.state, "redis_client", FakeRedis(decode_responses=True))
 
 
 @pytest.mark.asyncio
