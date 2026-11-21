@@ -57,11 +57,17 @@ tiers:
   chat-test:
     mock: "mock-model"
 
-  # Public demo only. The one deliberate exception to keeping mock out of a real chain: a
-  # demo instance has no Ollama, so mock is the fallback that keeps the page answering when
-  # Groq is down. Its reply is the fixed text "mock response", which the demo page labels as
-  # a canned backup rather than presenting as a model's answer. No team outside a demo
-  # deployment is allowed this tier.
+  # Public demo only. The one deliberate exception to keeping mock out of a real chain: mock
+  # is the last resort that keeps the page answering when every real provider is down. Its
+  # reply is the fixed text "mock response", which the demo page labels as a canned backup
+  # rather than presenting as a model's answer. No team outside a demo deployment is allowed
+  # this tier.
+  #
+  # Ollama is mapped but only used by demo teams whose chain names it. The 2 GB demo server
+  # cannot run Ollama, so its teams chain groq -> mock; a machine that can run it adds teams
+  # that put it first, or between Groq and mock so that a Groq outage falls back to a real
+  # answer.
   chat-demo:
     groq: "openai/gpt-oss-20b"
+    ollama: "llama3.2"
     mock: "mock-model"

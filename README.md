@@ -198,12 +198,14 @@ mismeasuring it — and it restores `config/teams.yaml` byte-for-byte before exi
 ## Public demo deployment
 
 Setting `DEMO_MODE=true` turns an instance into a public demo: a page at `/` where visitors send
-requests as one of two deliberately public, tightly capped demo teams, simulate a 60-second Groq
-outage, and run into the rate limit. The outage is fault injection at the provider boundary —
-`OutageSwitch` (`app/providers/outage.py`) wraps the Groq provider and fails its calls with the
-same `ProviderUnavailable` a real outage raises — so the retries, fallback and circuit breaker a
-visitor watches are the production code paths, not a simulation of them. Demo mode is off by
-default, and its routes do not exist unless it is on.
+requests as deliberately public, tightly capped demo teams, simulate a 60-second outage on any
+provider those teams use, and run into the rate limit. The outage is fault injection at the
+provider boundary — `OutageSwitch` (`app/providers/outage.py`) wraps Groq and Ollama and fails
+their calls with the same `ProviderUnavailable` a real outage raises — so the retries, fallback
+and circuit breaker a visitor watches are the production code paths, not a simulation of them.
+On a machine that runs Ollama, a `groq → ollama → mock` demo team shows a Groq outage falling
+back to a real local model. Demo mode is off by default, and its routes do not exist unless it
+is on.
 
 `docker-compose.prod.yml` adds HTTPS through Caddy, closes every port except 80 and 443, persists
 Redis, and reads a private teams file kept out of git. Server setup, step by step, is in
@@ -216,7 +218,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-**201 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, per-provider-model health, streaming resilience, the provider error taxonomy, model tiers, config reload, the admin API, metrics, system-prompt enrichment, and demo mode.
+**205 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, per-provider-model health, streaming resilience, the provider error taxonomy, model tiers, config reload, the admin API, metrics, system-prompt enrichment, and demo mode.
 
 Fifteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 

@@ -89,11 +89,13 @@ ollama_provider = OllamaProvider()
 mock_provider = MockProvider(should_fail=False)
 groq_provider = GroqProvider()
 if DEMO_MODE:
-    # Lets demo visitors take Groq down for a minute and watch fallback and the circuit
-    # breaker respond. The module-level object itself is wrapped, not just its entry in
-    # `providers`, because the request path rebuilds its provider map from these objects
-    # (see `runtime_providers` in `chat`).
+    # Lets demo visitors take a real provider down for a minute and watch fallback and the
+    # circuit breaker respond. The module-level objects themselves are wrapped, not just
+    # their entries in `providers`, because the request path rebuilds its provider map from
+    # these objects (see `runtime_providers` in `chat`). Mock is left alone: it is the last
+    # resort every demo chain ends on.
     groq_provider = OutageSwitch(groq_provider)
+    ollama_provider = OutageSwitch(ollama_provider)
 providers: dict[str, LLMProvider] = {
     ollama_provider.provider_name: ollama_provider,
     mock_provider.provider_name: mock_provider,
@@ -249,7 +251,11 @@ app.state.circuit_breaker = circuit_breaker
 
 if DEMO_MODE:
     app.include_router(
-        build_demo_router(groq_provider, DEMO_OUTAGE_SECONDS, DEMO_GRAFANA_URL)
+        build_demo_router(
+            {switch.provider_name: switch for switch in (groq_provider, ollama_provider)},
+            DEMO_OUTAGE_SECONDS,
+            DEMO_GRAFANA_URL,
+        )
     )
 
 

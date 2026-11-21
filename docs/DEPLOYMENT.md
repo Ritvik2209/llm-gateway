@@ -126,6 +126,9 @@ written back into `secrets/teams.yaml`.
 
 ## Things to know
 
+- **The page shows one outage button per provider the demo teams use.** On this server that is
+  Groq only. The commented-out teams in `deploy/teams.example.yaml` add Ollama controls on a
+  server that runs Ollama.
 - **The outage button changes real state.** It makes the gateway treat Groq as down for 60 s
   (`DEMO_OUTAGE_SECONDS`), for every visitor. The first few requests take about 3.5 s longer
   while the gateway retries, then the circuit opens. After the outage, the circuit stays open

@@ -93,6 +93,11 @@
      the whole page on a phone instead of scrolling inside its own box. */
   .two > * { min-width: 0; }
   @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+  .provider { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 0; }
+  .provider + .provider { border-top: 1px solid var(--border); }
+  .provider:first-child { padding-top: 0; }
+  .provider:last-child { padding-bottom: 0; }
+  .provider p { margin: 6px 0 0; }
   .dash-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   @media (max-width: 720px) { .dash-grid { grid-template-columns: 1fr; } }
   .dash {
@@ -118,17 +123,8 @@
   </header>
 
   <section class="card" aria-labelledby="provider-heading">
-    <div class="row">
-      <div class="grow">
-        <h2 id="provider-heading">Groq status</h2>
-        <div class="row small">
-          <span id="outage-pill" class="pill ok">No outage</span>
-          <span id="circuit-pill" class="pill ok">Circuit closed</span>
-        </div>
-        <p id="circuit-text" class="small muted" style="margin:8px 0 0">Loading…</p>
-      </div>
-      <button id="outage-btn" class="danger">Simulate Groq outage</button>
-    </div>
+    <h2 id="provider-heading">Providers</h2>
+    <div id="providers"><p id="providers-empty" class="small muted" style="margin:0">Loading…</p></div>
   </section>
 
   <section class="card" aria-labelledby="team-heading">
@@ -172,13 +168,14 @@
     <section class="card" aria-labelledby="try-heading">
       <h2 id="try-heading">What to try</h2>
       <ol class="steps small">
-        <li><strong>Ask a question.</strong> Groq answers it.</li>
-        <li><strong>Simulate an outage</strong>, then send about five requests. The first few
-          take ~3.5 s longer while the gateway retries Groq, then the circuit opens and the
-          fallback becomes instant. The Operations dashboard shows the circuit and the
-          fallbacks.</li>
+        <li><strong>Ask a question.</strong> The first provider in the team's chain answers
+          it.</li>
+        <li><strong>Simulate an outage</strong> on that provider, then send about five
+          requests. The first few take ~3.5 s longer while the gateway retries it, then the
+          circuit opens and the fallback becomes instant. The Operations dashboard shows the
+          circuit and the fallbacks.</li>
         <li><strong>Wait for the outage to end.</strong> After the cooldown, the next request
-          tests Groq again and the circuit closes.</li>
+          tests the provider again and the circuit closes.</li>
         <li><strong>Send 25 quick requests.</strong> The team allows a set number per minute,
           so the rest are rejected with 429. The limit is shared by everyone on this page.</li>
         <li><strong>Switch to the policy team</strong> and try the social security number
@@ -235,33 +232,98 @@
 
   // ---- Provider status -------------------------------------------------------------
 
+  var PROVIDER_LABELS = { groq: "Groq", ollama: "Ollama" };
+  var providerRows = {};
+
+  function providerLabel(name) { return PROVIDER_LABELS[name] || name; }
+
+  // Each row is built once and updated in place on every poll, so its button does not
+  // flicker or lose focus every two seconds.
+  function providerRow(name) {
+    if (providerRows[name]) { return providerRows[name]; }
+    var r = {
+      row: document.createElement("div"),
+      title: document.createElement("strong"),
+      chainNote: document.createElement("span"),
+      outage: document.createElement("span"),
+      circuit: document.createElement("span"),
+      text: document.createElement("p"),
+      button: document.createElement("button")
+    };
+    var body = document.createElement("div");
+    var head = document.createElement("div");
+    r.row.className = "provider";
+    body.className = "grow";
+    head.className = "row small";
+    r.title.style.fontSize = "15px";
+    r.chainNote.className = "muted";
+    r.text.className = "small muted";
+    r.button.className = "danger";
+    r.button.addEventListener("click", function () {
+      r.button.disabled = true;
+      fetch("/demo/outage/" + encodeURIComponent(name), { method: "POST" })
+        .then(function (resp) { return resp.json(); })
+        .then(function (s) {
+          if (s.providers) { state.status = s; renderStatus(); } else { refreshStatus(); }
+        })
+        .catch(function () { r.button.disabled = false; });
+    });
+    [r.title, r.chainNote, r.outage, r.circuit].forEach(function (el) { head.appendChild(el); });
+    body.appendChild(head);
+    body.appendChild(r.text);
+    r.row.appendChild(body);
+    r.row.appendChild(r.button);
+    $("providers").appendChild(r.row);
+    providerRows[name] = r;
+    return r;
+  }
+
+  function renderProvider(p, outageSeconds) {
+    var r = providerRow(p.name);
+    var label = providerLabel(p.name);
+    r.title.textContent = label;
+    var inChain = !state.team || state.team.provider_chain.indexOf(p.name) !== -1;
+    r.chainNote.textContent = "not in this team's chain";
+    r.chainNote.hidden = inChain;
+
+    if (p.outage_remaining_seconds > 0) {
+      setPill(r.outage, "Simulated outage: " + fmtSeconds(p.outage_remaining_seconds) + " left", "bad");
+      r.button.disabled = true;
+      r.button.textContent = label + " outage running";
+    } else {
+      setPill(r.outage, "No outage", "ok");
+      r.button.disabled = false;
+      r.button.textContent = "Simulate " + label + " outage (" + outageSeconds + " s)";
+    }
+
+    if (p.circuit_state === "open") {
+      setPill(r.circuit, "Circuit open", "bad");
+      r.text.textContent = p.circuit_retry_in_seconds > 0
+        ? label + " is being skipped, so requests go straight to the next provider in the chain. One trial request is allowed in " + fmtSeconds(p.circuit_retry_in_seconds) + "."
+        : "The cooldown is over. The next request that reaches " + label + " is its trial.";
+    } else if (p.circuit_state === "half_open") {
+      setPill(r.circuit, "Circuit half-open", "warn");
+      r.text.textContent = "One trial request is going to " + label + ". Success closes the circuit; failure opens it again.";
+    } else {
+      setPill(r.circuit, "Circuit closed", "ok");
+      r.text.textContent = label + " is tried whenever a team's chain reaches it. After 4 failed requests in a row the circuit opens and it is skipped for 30 s.";
+    }
+  }
+
   function renderStatus() {
     var s = state.status;
     if (!s) { return; }
-    if (s.outage_remaining_seconds > 0) {
-      setPill($("outage-pill"), "Simulated outage: " + fmtSeconds(s.outage_remaining_seconds) + " left", "bad");
-      $("outage-btn").disabled = true;
-      $("outage-btn").textContent = "Outage running";
-    } else {
-      setPill($("outage-pill"), "No outage", "ok");
-      $("outage-btn").disabled = false;
-      $("outage-btn").textContent = "Simulate Groq outage (" + s.outage_seconds + " s)";
-    }
-
-    var text;
-    if (s.circuit_state === "open") {
-      setPill($("circuit-pill"), "Circuit open", "bad");
-      text = s.circuit_retry_in_seconds > 0
-        ? "Groq is being skipped, so requests go straight to the fallback. One trial request is allowed in " + fmtSeconds(s.circuit_retry_in_seconds) + "."
-        : "The cooldown is over. The next request will be sent to Groq as a trial.";
-    } else if (s.circuit_state === "half_open") {
-      setPill($("circuit-pill"), "Circuit half-open", "warn");
-      text = "One trial request is going to Groq. Success closes the circuit; failure opens it again.";
-    } else {
-      setPill($("circuit-pill"), "Circuit closed", "ok");
-      text = "Requests go to Groq first. After 4 failed requests in a row the circuit opens and Groq is skipped for 30 s.";
-    }
-    $("circuit-text").textContent = text;
+    var shown = {};
+    s.providers.forEach(function (p) {
+      shown[p.name] = true;
+      renderProvider(p, s.outage_seconds);
+    });
+    // A hot-reloaded teams file can drop a provider from every demo chain.
+    Object.keys(providerRows).forEach(function (name) {
+      if (!shown[name]) { providerRows[name].row.remove(); delete providerRows[name]; }
+    });
+    $("providers-empty").hidden = s.providers.length > 0;
+    $("providers-empty").textContent = "No demo team uses a provider that can be taken down.";
 
     if (s.grafana_url) {
       var base = s.grafana_url.replace(/\/$/, "");
@@ -277,16 +339,11 @@
     return fetch("/demo/status")
       .then(function (r) { return r.json(); })
       .then(function (s) { state.status = s; renderStatus(); })
-      .catch(function () { $("circuit-text").textContent = "Could not reach the gateway."; });
+      .catch(function () {
+        $("providers-empty").hidden = false;
+        $("providers-empty").textContent = "Could not reach the gateway.";
+      });
   }
-
-  $("outage-btn").addEventListener("click", function () {
-    $("outage-btn").disabled = true;
-    fetch("/demo/outage", { method: "POST" })
-      .then(function (r) { return r.json(); })
-      .then(function (s) { state.status = s; renderStatus(); })
-      .catch(function () { $("outage-btn").disabled = false; });
-  });
 
   // ---- Teams -----------------------------------------------------------------------
 
@@ -330,7 +387,7 @@
       b.setAttribute("role", "tab");
       b.setAttribute("aria-selected", String(team === state.team));
       b.textContent = team.team_id;
-      b.addEventListener("click", function () { state.team = team; renderTabs(); renderTeam(); });
+      b.addEventListener("click", function () { state.team = team; renderTabs(); renderTeam(); renderStatus(); });
       tabs.appendChild(b);
     });
   }

@@ -213,21 +213,72 @@ async def test_an_outage_falls_back_opens_the_circuit_and_recovers(monkeypatch):
     assert inner.calls == 1
 
 
+@pytest.mark.asyncio
+async def test_a_three_provider_chain_falls_back_one_step_per_outage(monkeypatch):
+    """groq -> ollama -> mock, each provider asked for its own model in the tier."""
+    monkeypatch.setattr(main_module, "call_with_retry", _no_backoff)
+    clock = FakeClock()
+    groq = OutageSwitch(recording_provider("groq"), clock=clock)
+    ollama = OutageSwitch(recording_provider("ollama"), clock=clock)
+    providers = {"groq": groq, "ollama": ollama, "mock": MockProvider()}
+    team = {
+        **DEMO_TEAM,
+        "allowed_providers": ["groq", "ollama", "mock"],
+        "provider_priority": ["groq", "ollama", "mock"],
+    }
+    catalog = ModelCatalog(
+        providers={
+            "groq": {"openai/gpt-oss-20b"},
+            "ollama": {"llama3.2"},
+            "mock": {"mock-model"},
+        },
+        tiers={
+            "chat-demo": {
+                "groq": "openai/gpt-oss-20b",
+                "ollama": "llama3.2",
+                "mock": "mock-model",
+            }
+        },
+    )
+    circuit_breaker = CircuitBreaker()
+
+    async def served_by():
+        response = await main_module.call_chat_with_fallback(
+            team, REQUEST, HealthMonitor(), circuit_breaker, providers, model_catalog=catalog
+        )
+        return response.provider, response.model
+
+    assert await served_by() == ("groq", "openai/gpt-oss-20b")
+    groq.start_outage(60)
+    assert await served_by() == ("ollama", "llama3.2")
+    ollama.start_outage(60)
+    assert await served_by() == ("mock", "mock-model")
+
+
 # ---------------------------------------------------------------------------
 # Demo routes
 # ---------------------------------------------------------------------------
 
 
+def recording_provider(name: str) -> RecordingProvider:
+    provider = RecordingProvider()
+    provider.provider_name = name
+    return provider
+
+
 def build_demo_client(teams_config):
     clock = FakeClock()
-    switch = OutageSwitch(RecordingProvider(), clock=clock)
+    switches = {
+        name: OutageSwitch(recording_provider(name), clock=clock)
+        for name in ("groq", "ollama")
+    }
     app = FastAPI()
     app.state.teams_config = teams_config
     app.state.circuit_breaker = CircuitBreaker()
     app.include_router(
-        build_demo_router(switch, outage_seconds=60, grafana_url="https://grafana.test")
+        build_demo_router(switches, outage_seconds=60, grafana_url="https://grafana.test")
     )
-    return TestClient(app), switch, app.state.circuit_breaker, clock
+    return TestClient(app), switches, app.state.circuit_breaker, clock
 
 
 PUBLISHED_TEAMS = {
@@ -245,6 +296,17 @@ PUBLISHED_TEAMS = {
     "admin-key": {**DEMO_TEAM, "team_id": "admin", "public_demo": True, "is_admin": True},
 }
 
+WITH_OLLAMA_TEAM = {
+    **PUBLISHED_TEAMS,
+    "ollama-key": {
+        **DEMO_TEAM,
+        "team_id": "demo-ollama",
+        "allowed_providers": ["ollama", "mock"],
+        "provider_priority": ["ollama", "mock"],
+        "public_demo": True,
+    },
+}
+
 
 def test_only_public_non_admin_teams_are_published():
     client, *_ = build_demo_client(PUBLISHED_TEAMS)
@@ -258,32 +320,64 @@ def test_only_public_non_admin_teams_are_published():
 
 
 def test_the_outage_endpoint_starts_one_outage_at_a_time():
-    client, switch, _breaker, clock = build_demo_client(PUBLISHED_TEAMS)
+    client, switches, _breaker, clock = build_demo_client(PUBLISHED_TEAMS)
 
-    first = client.post("/demo/outage").json()
+    first = client.post("/demo/outage/groq").json()
     clock.now += 10
-    second = client.post("/demo/outage").json()
+    second = client.post("/demo/outage/groq").json()
 
     assert first["started"] is True
-    assert first["outage_remaining_seconds"] == 60
+    assert first["providers"][0]["outage_remaining_seconds"] == 60
     assert second["started"] is False
-    assert second["outage_remaining_seconds"] == 50
-    assert switch.outage_remaining_seconds() == 50
+    assert second["providers"][0]["outage_remaining_seconds"] == 50
+    assert switches["groq"].outage_remaining_seconds() == 50
 
 
 def test_status_reports_an_open_circuit_and_the_time_to_its_trial_request():
-    client, _switch, breaker, _clock = build_demo_client(PUBLISHED_TEAMS)
+    client, _switches, breaker, _clock = build_demo_client(PUBLISHED_TEAMS)
 
     closed = client.get("/demo/status").json()
     for _ in range(breaker.failure_threshold):
         breaker.record_failure("groq")
     opened = client.get("/demo/status").json()
 
-    assert closed["circuit_state"] == "closed"
-    assert closed["circuit_retry_in_seconds"] is None
     assert closed["grafana_url"] == "https://grafana.test"
-    assert opened["circuit_state"] == "open"
-    assert 0 < opened["circuit_retry_in_seconds"] <= breaker.cooldown_seconds
+    assert closed["providers"][0]["circuit_state"] == "closed"
+    assert closed["providers"][0]["circuit_retry_in_seconds"] is None
+    assert opened["providers"][0]["circuit_state"] == "open"
+    retry_in = opened["providers"][0]["circuit_retry_in_seconds"]
+    assert 0 < retry_in <= breaker.cooldown_seconds
+
+
+def test_only_providers_a_demo_team_uses_are_shown_or_breakable():
+    """A server without Ollama in any demo chain must not offer to take Ollama down."""
+    client, switches, _breaker, _clock = build_demo_client(PUBLISHED_TEAMS)
+
+    names = [p["name"] for p in client.get("/demo/status").json()["providers"]]
+    response = client.post("/demo/outage/ollama")
+
+    assert names == ["groq"]
+    assert response.status_code == 404
+    assert switches["ollama"].outage_remaining_seconds() == 0
+
+
+def test_each_demo_provider_has_its_own_outage():
+    client, switches, _breaker, _clock = build_demo_client(WITH_OLLAMA_TEAM)
+
+    names = [p["name"] for p in client.get("/demo/status").json()["providers"]]
+    response = client.post("/demo/outage/ollama").json()
+
+    assert names == ["groq", "ollama"]
+    assert response["started"] is True
+    assert switches["ollama"].outage_remaining_seconds() == 60
+    assert switches["groq"].outage_remaining_seconds() == 0
+
+
+def test_mock_can_never_be_taken_down():
+    """Mock ends every demo chain; breaking it would replace fallback with 503s."""
+    client, *_ = build_demo_client(WITH_OLLAMA_TEAM)
+
+    assert client.post("/demo/outage/mock").status_code == 404
 
 
 def test_the_page_is_served_at_the_root():
@@ -296,12 +390,13 @@ def test_the_page_is_served_at_the_root():
     assert "LLM Gateway demo" in response.text
 
 
-def test_demo_routes_and_the_switch_exist_only_in_demo_mode():
+def test_demo_routes_and_the_switches_exist_only_in_demo_mode():
     """An unauthenticated way to take a provider down must not ship by default."""
     paths = {route.path for route in main_module.app.routes}
 
-    assert ("/demo/outage" in paths) is config_module.DEMO_MODE
+    assert ("/demo/outage/{provider_name}" in paths) is config_module.DEMO_MODE
     assert isinstance(main_module.groq_provider, OutageSwitch) is config_module.DEMO_MODE
+    assert isinstance(main_module.ollama_provider, OutageSwitch) is config_module.DEMO_MODE
 
 
 # ---------------------------------------------------------------------------

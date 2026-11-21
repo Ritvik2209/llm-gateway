@@ -42,6 +42,33 @@ teams:
     tokens_per_minute: 4000
     monthly_budget_usd: 1.00
 
+  # Only on a server that runs Ollama (8 GB of RAM or more), with OLLAMA_BASE_URL pointing
+  # at it. Each provider a public team's chain names gets its own status row and outage
+  # button on the page, so these add Ollama controls; demo-chain shows a Groq outage falling
+  # back to a real model instead of the canned mock reply.
+  #
+  # - team_id: "demo-ollama"
+  #   api_key: "demo-ollama-key"
+  #   public_demo: true
+  #   allowed_models: ["chat-demo", "mock-model"]
+  #   allowed_providers: ["ollama", "mock"]
+  #   provider_priority: ["ollama", "mock"]
+  #   system_prompt: null
+  #   requests_per_minute: 20
+  #   tokens_per_minute: 0
+  #   monthly_budget_usd: 1.00
+  #
+  # - team_id: "demo-chain"
+  #   api_key: "demo-chain-key"
+  #   public_demo: true
+  #   allowed_models: ["chat-demo", "mock-model"]
+  #   allowed_providers: ["groq", "ollama", "mock"]
+  #   provider_priority: ["groq", "ollama", "mock"]
+  #   system_prompt: null
+  #   requests_per_minute: 20
+  #   tokens_per_minute: 4000
+  #   monthly_budget_usd: 1.00
+
   # Private. Used only by you, against /admin endpoints. Never mark this public_demo: the
   # gateway refuses to load a team that is both.
   - team_id: "team-admin"

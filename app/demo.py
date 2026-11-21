@@ -1,16 +1,17 @@
-"""Routes for a public demo instance: the page, and the outage switch it drives.
+"""Routes for a public demo instance: the page, and the outage switches it drives.
 
 Registered only when DEMO_MODE is on (see app/main.py). None of these routes take a key,
 so none of them may do more than an anonymous visitor is allowed to: read which teams the
-demo publishes, read the outage and circuit state, and start a time-limited outage on the
-one provider wrapped for it. Limits, config and the admin API stay behind the admin key.
+demo publishes, read outage and circuit state, and start a time-limited outage on a
+provider that a published team actually uses. Limits, config and the admin API stay behind
+the admin key.
 """
 
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse
 
 from app.circuit_breaker import CircuitBreaker
@@ -69,29 +70,53 @@ def public_demo_teams(teams_config: dict[str, dict[str, Any]]) -> list[dict[str,
     return teams
 
 
+def demo_provider_names(
+    teams_config: dict[str, dict[str, Any]],
+    outage_switches: dict[str, OutageSwitch],
+) -> list[str]:
+    """The providers a visitor may take down, in the order the demo chains first name them.
+
+    Only providers that a published team can actually reach, so a demo server without
+    Ollama shows no Ollama controls and an anonymous visitor cannot touch a provider no
+    demo team uses. Mock is never wrapped in a switch: it is the last resort every demo
+    chain ends on, and breaking it would turn fallback into a page of 503s.
+    """
+    names: list[str] = []
+    for team in public_demo_teams(teams_config):
+        for name in team["provider_chain"]:
+            if name in outage_switches and name not in names:
+                names.append(name)
+    return names
+
+
 def build_demo_router(
-    outage_switch: OutageSwitch,
+    outage_switches: dict[str, OutageSwitch],
     outage_seconds: int,
     grafana_url: str = "",
 ) -> APIRouter:
     router = APIRouter()
 
-    def status_payload(request: Request) -> dict[str, Any]:
+    def provider_status(request: Request, provider_name: str) -> dict[str, Any]:
         # The breaker is read from app state on each call rather than captured here, so it
         # is always the one the request path is using.
         circuit_breaker = request.app.state.circuit_breaker
-        provider_name = outage_switch.provider_name
         return {
-            "provider": provider_name,
-            "outage_seconds": outage_seconds,
+            "name": provider_name,
             "outage_remaining_seconds": round(
-                outage_switch.outage_remaining_seconds(), 1
+                outage_switches[provider_name].outage_remaining_seconds(), 1
             ),
             "circuit_state": circuit_breaker.get_state(provider_name),
             "circuit_retry_in_seconds": seconds_until_half_open(
                 circuit_breaker, provider_name
             ),
+        }
+
+    def status_payload(request: Request) -> dict[str, Any]:
+        names = demo_provider_names(request.app.state.teams_config, outage_switches)
+        return {
+            "outage_seconds": outage_seconds,
             "grafana_url": grafana_url or None,
+            "providers": [provider_status(request, name) for name in names],
         }
 
     @router.get("/", include_in_schema=False)
@@ -105,13 +130,23 @@ def build_demo_router(
 
     @router.get("/demo/status")
     async def demo_status(request: Request) -> dict[str, Any]:
-        """Whether a simulated outage is running, and the provider's circuit state."""
+        """Outage and circuit state for each provider the demo teams use."""
         return status_payload(request)
 
-    @router.post("/demo/outage")
-    async def demo_outage(request: Request) -> dict[str, Any]:
-        """Start a time-limited simulated outage. A running outage is left as it is."""
-        started = outage_switch.start_outage(outage_seconds)
-        return {"started": started, **status_payload(request)}
+    @router.post("/demo/outage/{provider_name}")
+    async def demo_outage(provider_name: str, request: Request) -> dict[str, Any]:
+        """Start a time-limited simulated outage on one provider the demo teams use.
+
+        A running outage is left as it is rather than extended.
+        """
+        if provider_name not in demo_provider_names(
+            request.app.state.teams_config, outage_switches
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f'"{provider_name}" is not a provider this demo can take down.',
+            )
+        started = outage_switches[provider_name].start_outage(outage_seconds)
+        return {"started": started, "provider": provider_name, **status_payload(request)}
 
     return router

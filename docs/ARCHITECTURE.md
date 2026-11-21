@@ -9,7 +9,7 @@ a model.
 |---|---|
 | Gateway overhead | **1.67 ms** mean (target: <10 ms) |
 | Throughput ceiling | **~450 req/s** single process |
-| Tests | 201, offline, no credentials |
+| Tests | 205, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
 | Application code | 2,624 lines across 21 modules |
 
@@ -485,12 +485,13 @@ Hystrix did, and they prevent one replica's bad view from black-holing traffic f
 But it is a real property, and it is the honest answer to "how does this scale?"
 
 **The public demo** runs this same single-replica topology behind Caddy, with `DEMO_MODE`
-adding **fault injection**: `OutageSwitch` wraps the Groq provider at the `LLMProvider`
+adding **fault injection**: `OutageSwitch` wraps Groq and Ollama at the `LLMProvider`
 boundary, so a visitor-triggered outage travels through the real retry, fallback and breaker
-paths rather than a simulation of them. Three guard rails make an unauthenticated switch
+paths rather than a simulation of them. Four guard rails make an unauthenticated switch
 acceptable there: the outage expires on its own and cannot be extended while running, a
-switched-off provider is never called (so the demo spends no quota failing), and the switch
-exists only on an instance with no real tenants. The demo teams' keys are public by design;
+switched-off provider is never called (so the demo spends no quota failing), only providers
+that a published demo team actually uses can be switched off (never mock, the last resort
+every chain ends on), and the switch exists only on an instance with no real tenants. The demo teams' keys are public by design;
 their rate limits and budget caps are what protect the Groq key. Setup is in
 [DEPLOYMENT.md](DEPLOYMENT.md).
 
@@ -643,6 +644,6 @@ Counts of tests, metrics, panels, rules and endpoints were taken from the source
 from memory. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
-Scope as documented: 201 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
+Scope as documented: 205 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
 3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
 roughly 2,800 lines of application code against 3,100 lines of tests across 37 commits.
