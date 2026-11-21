@@ -1,15 +1,21 @@
-fastapi
-uvicorn
-httpx
-pydantic
-python-dotenv
-pytest
-pytest-asyncio
-pytest-httpx
-pyyaml
+# Pinned. CI and the Docker image both install from this file, and unpinned they silently
+# took whatever was newest: pytest 9.2 changed how monkeypatch restores attributes and broke
+# 70 tests in CI while every local run passed. Upgrade deliberately, by changing a version
+# here and running the suite.
+fastapi==0.165.0
+# Pinned on its own because FastAPI only bounds it to a range, and app.state is Starlette's.
+starlette==1.10.0
+uvicorn==0.54.0
+httpx==0.28.1
+pydantic==2.14.4
+python-dotenv==1.2.4
+pytest==9.2.0
+pytest-asyncio==1.5.0
+pytest-httpx==0.36.2
+pyyaml==6.0.4
 # Round-trip YAML editing for the admin API: preserves comments and formatting when
 # writing config back, which plain pyyaml discards.
-ruamel.yaml
-redis
-fakeredis
-prometheus-client
+ruamel.yaml==0.19.1
+redis==8.1.0
+fakeredis==2.40.0
+prometheus-client==0.26.0
