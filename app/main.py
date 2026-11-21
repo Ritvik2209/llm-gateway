@@ -226,8 +226,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="LLM API Gateway", lifespan=lifespan)
-app.state.teams_config = load_teams_config()
-app.state.model_catalog = load_model_catalog()
+# The configured paths, not the loaders' defaults. Startup used to ignore them, so pointing
+# TEAMS_CONFIG_PATH at a private file still served the committed demo keys until that file
+# happened to change and the watcher reloaded it.
+app.state.teams_config = load_teams_config(TEAMS_CONFIG_PATH)
+app.state.model_catalog = load_model_catalog(MODEL_CATALOG_PATH)
 app.state.config_loaded_at = datetime.now(timezone.utc)
 app.state.redis_client = get_redis_client()
 app.state.providers = providers

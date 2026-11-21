@@ -5,6 +5,11 @@ harmless. A config file is edited by hand, so a malformed edit is a routine even
 must not be able to take the gateway down or leave it serving half a change.
 """
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -282,3 +287,36 @@ def test_enrichment_settings_default_to_absent(tmp_path):
     assert team["mandatory_system_prompt"] is None
     assert team["response_disclaimer"] is None
     assert team["blocked_patterns"] == []
+
+
+def test_startup_loads_the_configured_teams_file(tmp_path):
+    """Startup must read TEAMS_CONFIG_PATH, not the committed file.
+
+    It used to load the default path at import, so a deployment pointing at a private
+    teams file still served the committed demo keys until that file happened to change
+    and the watcher reloaded it. Run in a fresh interpreter because the path is read once,
+    when app.main is imported.
+    """
+    teams_path = tmp_path / "teams.yaml"
+    teams_path.write_text(
+        "teams:\n"
+        '  - team_id: "startup-only-team"\n'
+        '    api_key: "startup-only-key"\n',
+        encoding="utf-8",
+    )
+    script = (
+        "from app.main import app; "
+        "print(sorted(team['team_id'] for team in app.state.teams_config.values()))"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parent.parent,
+        env={**os.environ, "TEAMS_CONFIG_PATH": str(teams_path)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "['startup-only-team']"
