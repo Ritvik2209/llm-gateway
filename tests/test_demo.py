@@ -274,11 +274,30 @@ def build_demo_client(teams_config):
     }
     app = FastAPI()
     app.state.teams_config = teams_config
+    app.state.model_catalog = ROUTING_CATALOG
     app.state.circuit_breaker = CircuitBreaker()
     app.include_router(
         build_demo_router(switches, outage_seconds=60, grafana_url="https://grafana.test")
     )
     return TestClient(app), switches, app.state.circuit_breaker, clock
+
+
+# chat-demo maps Ollama as well, as config/models.yaml does, so the routing test can show
+# that a team whose chain omits Ollama is never told it would go there.
+ROUTING_CATALOG = ModelCatalog(
+    providers={
+        "groq": {"openai/gpt-oss-20b"},
+        "ollama": {"llama3.2"},
+        "mock": {"mock-model"},
+    },
+    tiers={
+        "chat-demo": {
+            "groq": "openai/gpt-oss-20b",
+            "ollama": "llama3.2",
+            "mock": "mock-model",
+        }
+    },
+)
 
 
 PUBLISHED_TEAMS = {
@@ -317,6 +336,27 @@ def test_only_public_non_admin_teams_are_published():
     assert teams[0]["api_key"] == "public-key"
     assert teams[0]["provider_chain"] == ["groq", "mock"]
     assert teams[0]["requests_per_minute"] == 20
+
+
+def test_each_model_shows_where_it_goes_through_this_teams_chain():
+    """A tier resolves per provider, but only across providers the team may reach."""
+    teams_config = {
+        "public-key": {
+            **PUBLISHED_TEAMS["public-key"],
+            "allowed_models": ["chat-demo", "mock-model", "no-such-model"],
+        }
+    }
+    client, *_ = build_demo_client(teams_config)
+
+    models = client.get("/demo/teams").json()["teams"][0]["models"]
+    routes = {model["name"]: model["routes"] for model in models}
+
+    assert routes["chat-demo"] == [
+        {"provider": "groq", "model": "openai/gpt-oss-20b"},
+        {"provider": "mock", "model": "mock-model"},
+    ]
+    assert routes["mock-model"] == [{"provider": "mock", "model": "mock-model"}]
+    assert routes["no-such-model"] == []
 
 
 def test_the_outage_endpoint_starts_one_outage_at_a_time():

@@ -58,6 +58,10 @@
   button:disabled { opacity: 0.55; cursor: not-allowed; }
   .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
   .tab[aria-selected="true"] { border-color: var(--accent); color: var(--accent); background: var(--info-bg); }
+  select {
+    font: inherit; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; max-width: 100%;
+  }
   textarea {
     width: 100%; min-height: 84px; resize: vertical; font: inherit; color: var(--text);
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
@@ -135,6 +139,11 @@
 
   <section class="card" aria-labelledby="ask-heading">
     <h2 id="ask-heading">Send a request</h2>
+    <div class="row" style="margin-bottom:10px">
+      <label for="model" class="small muted">Model</label>
+      <select id="model"></select>
+      <span id="route" class="small muted grow"></span>
+    </div>
     <textarea id="prompt" aria-label="Prompt">Explain the circuit breaker pattern in software in two sentences.</textarea>
     <div id="chips" class="chips"></div>
     <div class="row">
@@ -168,8 +177,8 @@
     <section class="card" aria-labelledby="try-heading">
       <h2 id="try-heading">What to try</h2>
       <ol class="steps small">
-        <li><strong>Ask a question.</strong> The first provider in the team's chain answers
-          it.</li>
+        <li><strong>Ask a question.</strong> The first provider that serves the chosen model
+          answers it; the line beside the model picker shows the order.</li>
         <li><strong>Simulate an outage</strong> on that provider, then send about five
           requests. The first few take ~3.5 s longer while the gateway retries it, then the
           circuit opens and the fallback becomes instant. The Operations dashboard shows the
@@ -365,8 +374,11 @@
     var list = $("team-config");
     list.textContent = "";
     if (!team) { return; }
-    addConfigRow(list, "Shows", hasPolicies(team) ? "Content policy and prompt enrichment" : "Failover, circuit breaking and rate limiting");
+    addConfigRow(list, "Shows", teamFeatures(team));
     addConfigRow(list, "Provider chain", team.provider_chain.join(" → "));
+    if (team.system_prompt) {
+      addConfigRow(list, "Default prompt", team.system_prompt + " (applies only when a request has no system message of its own)");
+    }
     var limits = team.requests_per_minute + " requests/min";
     if (team.tokens_per_minute) { limits += " · " + team.tokens_per_minute.toLocaleString() + " tokens/min"; }
     limits += " · $" + Number(team.monthly_budget_usd).toFixed(2) + "/month";
@@ -376,7 +388,59 @@
     if (team.response_disclaimer) { addConfigRow(list, "Disclaimer", team.response_disclaimer); }
     addConfigRow(list, "API key", team.api_key + " (public on purpose; the limits above are what protect it)");
     renderChips();
+    renderModels();
   }
+
+  // A tier is a model name that resolves to a different physical model per provider.
+  function isTier(model) {
+    return model.routes.some(function (r) { return r.model !== model.name; });
+  }
+
+  function teamFeatures(team) {
+    var parts = [];
+    if (team.models.some(isTier)) { parts.push("model tiers"); }
+    if (team.provider_chain.length > 1) { parts.push("failover and circuit breaking"); }
+    if (hasPolicies(team)) { parts.push("content policy"); }
+    if (team.system_prompt) { parts.push("a default system prompt"); }
+    parts.push("rate limiting");
+    var text = parts.join(", ");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function selectedModel() {
+    var team = state.team;
+    return team && team.models.filter(function (m) { return m.name === $("model").value; })[0];
+  }
+
+  // Tiers come first by default: they are the interesting case.
+  function defaultModel(team) {
+    if (team.allowed_models.indexOf("chat-demo") !== -1) { return "chat-demo"; }
+    var tier = team.models.filter(isTier)[0];
+    return tier ? tier.name : team.allowed_models[0];
+  }
+
+  function renderModels() {
+    var select = $("model");
+    select.textContent = "";
+    state.team.models.forEach(function (m) {
+      var option = document.createElement("option");
+      option.value = m.name;
+      option.textContent = m.name;
+      select.appendChild(option);
+    });
+    select.value = defaultModel(state.team);
+    renderRoute();
+  }
+
+  function renderRoute() {
+    var model = selectedModel();
+    if (!model) { $("route").textContent = ""; return; }
+    $("route").textContent = model.routes.length
+      ? "Tried in order: " + model.routes.map(function (r) { return r.provider + " (" + r.model + ")"; }).join(" → ")
+      : "No provider in this team's chain serves this model, so requests are refused with 503.";
+  }
+
+  $("model").addEventListener("change", renderRoute);
 
   function renderTabs() {
     var tabs = $("tabs");
@@ -433,14 +497,10 @@
 
   // ---- Requests --------------------------------------------------------------------
 
-  function chatModel(team) {
-    return team.allowed_models.indexOf("chat-demo") !== -1 ? "chat-demo" : team.allowed_models[0];
-  }
-
   // The burst only exists to show the rate limiter, so it asks for the mock model when the
   // team allows it: rejected or not, it should not spend Groq quota to make its point.
   function burstModel(team) {
-    return team.allowed_models.indexOf("mock-model") !== -1 ? "mock-model" : chatModel(team);
+    return team.allowed_models.indexOf("mock-model") !== -1 ? "mock-model" : $("model").value;
   }
 
   function send(team, model, prompt) {
@@ -457,11 +517,12 @@
           ms: Math.round(performance.now() - started),
           retryAfter: r.headers.get("Retry-After"),
           budgetWarning: r.headers.get("X-Budget-Warning") === "true",
-          team: team.team_id
+          team: team.team_id,
+          requested: model
         };
       });
     }).catch(function () {
-      return { status: 0, body: { detail: "Network error: the gateway could not be reached." }, ms: Math.round(performance.now() - started), team: team.team_id };
+      return { status: 0, body: { detail: "Network error: the gateway could not be reached." }, ms: Math.round(performance.now() - started), team: team.team_id, requested: model };
     });
   }
 
@@ -524,7 +585,11 @@
 
     if (result.status === 200) {
       var b = result.body;
-      var primary = state.team && state.team.provider_chain[0];
+      // The first provider that serves the requested model, not the first in the chain.
+      // A provider that cannot serve the model was never a candidate, so being answered
+      // elsewhere is capability routing, not a fallback.
+      var requestedModel = state.team && state.team.models.filter(function (m) { return m.name === result.requested; })[0];
+      var primary = requestedModel && requestedModel.routes.length ? requestedModel.routes[0].provider : null;
       var fellBack = primary && b.provider !== primary;
       setPill($("res-provider"), b.provider === "mock" ? "Served by mock (canned backup reply)" : "Served by " + b.provider, fellBack ? "warn" : "info");
       $("res-provider").hidden = false;
@@ -534,7 +599,9 @@
         note.textContent = primary + " was unavailable, so the gateway fell back to " + b.provider + ". The caller still got a 200.";
       }
       $("res-answer").textContent = b.content || "(The model returned no text. Try again, or ask a shorter question.)";
-      addMeta("Model: " + b.model);
+      addMeta(result.requested && result.requested !== b.model
+        ? "Model: " + result.requested + " → " + b.model
+        : "Model: " + b.model);
       addMeta("Tokens: " + b.input_tokens + " in / " + b.output_tokens + " out");
       addMeta("Round trip: " + result.ms + " ms");
     } else {
@@ -568,7 +635,7 @@
     if (!prompt || !state.team) { return; }
     var team = state.team;
     setBusy("Waiting for the gateway…");
-    send(team, chatModel(team), prompt).then(function (result) {
+    send(team, $("model").value, prompt).then(function (result) {
       addLog(result);
       showResult(result);
       setBusy("");

@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse
 
 from app.circuit_breaker import CircuitBreaker
+from app.models.catalog import ModelCatalog
 from app.providers.outage import OutageSwitch
 
 
@@ -36,7 +37,32 @@ def seconds_until_half_open(
     return round(max(0.0, circuit_breaker.cooldown_seconds - elapsed), 1)
 
 
-def public_demo_teams(teams_config: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def model_routes(
+    model: str,
+    provider_chain: list[str],
+    model_catalog: ModelCatalog | None,
+) -> list[dict[str, str]]:
+    """Where a request for this model goes for this team, in the order it would be tried.
+
+    The team's chain, filtered to the providers that serve the model, each paired with the
+    physical model it would be asked for. For a tier those differ per provider, which is the
+    point of a tier: one name, a different model on each provider the request can fall back
+    to.
+    """
+    if model_catalog is None:
+        return []
+    resolution = model_catalog.resolve(model)
+    return [
+        {"provider": name, "model": resolution[name]}
+        for name in provider_chain
+        if name in resolution
+    ]
+
+
+def public_demo_teams(
+    teams_config: dict[str, dict[str, Any]],
+    model_catalog: ModelCatalog | None = None,
+) -> list[dict[str, Any]]:
     """The teams whose keys the page may use, with what each one is configured to do.
 
     Read from the live config on every call, so a hot-reloaded change to a demo team shows
@@ -48,16 +74,23 @@ def public_demo_teams(teams_config: dict[str, dict[str, Any]]) -> list[dict[str,
         if not team.get("public_demo") or team.get("is_admin"):
             continue
         allowed_providers = set(team.get("allowed_providers", []))
+        provider_chain = [
+            name for name in team.get("provider_priority", []) if name in allowed_providers
+        ]
+        allowed_models = team.get("allowed_models", [])
         teams.append(
             {
                 "team_id": team["team_id"],
                 "api_key": api_key,
-                "allowed_models": team.get("allowed_models", []),
-                "provider_chain": [
-                    name
-                    for name in team.get("provider_priority", [])
-                    if name in allowed_providers
+                "allowed_models": allowed_models,
+                "models": [
+                    {
+                        "name": model,
+                        "routes": model_routes(model, provider_chain, model_catalog),
+                    }
+                    for model in allowed_models
                 ],
+                "provider_chain": provider_chain,
                 "requests_per_minute": team.get("requests_per_minute"),
                 "tokens_per_minute": team.get("tokens_per_minute"),
                 "monthly_budget_usd": team.get("monthly_budget_usd"),
@@ -125,8 +158,12 @@ def build_demo_router(
 
     @router.get("/demo/teams")
     async def demo_teams(request: Request) -> dict[str, list[dict[str, Any]]]:
-        """The public demo teams and their configured limits and policies."""
-        return {"teams": public_demo_teams(request.app.state.teams_config)}
+        """The public demo teams, their models and where each goes, limits and policies."""
+        return {
+            "teams": public_demo_teams(
+                request.app.state.teams_config, request.app.state.model_catalog
+            )
+        }
 
     @router.get("/demo/status")
     async def demo_status(request: Request) -> dict[str, Any]:
