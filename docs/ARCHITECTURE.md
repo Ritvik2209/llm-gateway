@@ -9,7 +9,7 @@ a model.
 |---|---|
 | Gateway overhead | **1.67 ms** mean (target: <10 ms) |
 | Throughput ceiling | **~450 req/s** single process |
-| Tests | 205, offline, no credentials |
+| Tests | 212, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
 | Application code | 2,624 lines across 21 modules |
 
@@ -225,7 +225,15 @@ sequenceDiagram
 ```
 
 There is no lock and no read-modify-write; correctness comes from `INCRBYFLOAT` being
-atomic and every path having an inverse. An 80% crossing sets an `X-Budget-Warning` header
+atomic and every path having an inverse.
+
+**The ceiling has to reach the provider.** A reservation priced at `max_tokens` is only a
+worst case if the model is told to stop there, so the ceiling is sent as
+`max_completion_tokens` to Groq and `num_predict` to Ollama. It once was not: the field was
+priced and then dropped, and requests capped at 300 tokens averaged about 1,170, so the
+"worst case" was optimistic and the cap was breachable. Usage is then counted as billed.
+Groq's `completion_tokens` already includes hidden reasoning tokens, and adding them again
+once overstated output, cost and token-limit usage by up to 1.8×. An 80% crossing sets an `X-Budget-Warning` header
 rather than failing. A floating-point epsilon of `1e-9` guards the comparison so accumulated
 rounding cannot refuse a request that is exactly at the cap.
 
@@ -621,10 +629,11 @@ streaming fallback — a mid-stream failure genuinely cannot fail over, but one 
 first byte could, and that is now cheap because streaming errors are typed.
 
 **What did you get wrong and have to fix?**
-Several things, and the pattern is more interesting than any one of them. Four controls
+Several things, and the pattern is more interesting than any one of them. Five controls
 looked real and were not: an allowlist that was never enforced, admin endpoints with no
-authentication, a budget cap that could be breached under concurrency, and a health monitor
-that consumed the quota it protected. Separately, the same Prometheus defect — a labelled
+authentication, a budget cap that could be breached under concurrency, a health monitor
+that consumed the quota it protected, and a `max_tokens` ceiling the budget was priced
+against but no provider was ever sent. Separately, the same Prometheus defect — a labelled
 counter having no series until its first increment — appeared four times in different
 disguises, including an alert that could not fire on the first occurrence of the thing it
 existed to detect.
@@ -644,6 +653,6 @@ Counts of tests, metrics, panels, rules and endpoints were taken from the source
 from memory. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
-Scope as documented: 205 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
+Scope as documented: 212 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
 3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
 roughly 2,800 lines of application code against 3,100 lines of tests across 37 commits.

@@ -218,7 +218,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-**205 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, per-provider-model health, streaming resilience, the provider error taxonomy, model tiers, config reload, the admin API, metrics, system-prompt enrichment, and demo mode.
+**212 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, per-provider-model health, streaming resilience, the provider error taxonomy, model tiers, config reload, the admin API, metrics, system-prompt enrichment, and demo mode.
 
 Fifteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 
