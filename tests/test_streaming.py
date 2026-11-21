@@ -91,6 +91,7 @@ async def test_ollama_chat_stream_yields_chunks_and_accumulates_text():
                 {"role": "user", "content": "Say hello"},
             ],
             "stream": True,
+            "options": {"num_predict": 1024, "temperature": 0.7},
         },
     )
 

@@ -51,6 +51,22 @@ class GroqProvider(LLMProvider):
 
         return {"Authorization": f"Bearer {self.api_key}"}
 
+    def _build_generation_options(self, request: UnifiedChatRequest) -> dict:
+        """The caller's output ceiling and temperature, in Groq's field names.
+
+        Budget enforcement reserves a request's cost at its max_tokens, so the ceiling has
+        to reach the provider. It used to be dropped here, and the model generated past it:
+        requests capped at 300 tokens averaged about 1,170, which made the reservation
+        optimistic and the monthly cap breachable. Groq counts reasoning tokens inside this
+        ceiling, so it bounds everything that is billed.
+        """
+        options: dict = {}
+        if request.max_tokens is not None:
+            options["max_completion_tokens"] = request.max_tokens
+        if request.temperature is not None:
+            options["temperature"] = request.temperature
+        return options
+
     def _build_usage(self, usage: dict) -> dict[str, int]:
         input_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
@@ -73,6 +89,7 @@ class GroqProvider(LLMProvider):
             "model": request.model,
             "messages": self._build_messages(request),
             "stream": False,
+            **self._build_generation_options(request),
         }
 
         try:
@@ -129,6 +146,7 @@ class GroqProvider(LLMProvider):
             "model": request.model,
             "messages": self._build_messages(request),
             "stream": True,
+            **self._build_generation_options(request),
         }
         self.last_stream_usage = {"input_tokens": 0, "output_tokens": 0}
 

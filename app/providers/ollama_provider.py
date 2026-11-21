@@ -35,12 +35,29 @@ class OllamaProvider(LLMProvider):
             for message in request.messages
         ]
 
-    async def chat(self, request: UnifiedChatRequest) -> UnifiedChatResponse:
-        payload = {
+    def _build_payload(self, request: UnifiedChatRequest, stream: bool) -> dict:
+        """The request body, with the caller's output ceiling and temperature as options.
+
+        Ollama takes the ceiling as num_predict. Without it a local model generates until
+        it decides to stop, so the max_tokens a request was admitted and budgeted against
+        never bounded what it actually produced.
+        """
+        payload: dict = {
             "model": request.model,
             "messages": self._build_messages(request),
-            "stream": False,
+            "stream": stream,
         }
+        options: dict = {}
+        if request.max_tokens is not None:
+            options["num_predict"] = request.max_tokens
+        if request.temperature is not None:
+            options["temperature"] = request.temperature
+        if options:
+            payload["options"] = options
+        return payload
+
+    async def chat(self, request: UnifiedChatRequest) -> UnifiedChatResponse:
+        payload = self._build_payload(request, stream=False)
 
         try:
             timeout = httpx.Timeout(
@@ -86,11 +103,7 @@ class OllamaProvider(LLMProvider):
     async def chat_stream(
         self, request: UnifiedChatRequest
     ) -> AsyncGenerator[str, None]:
-        payload = {
-            "model": request.model,
-            "messages": self._build_messages(request),
-            "stream": True,
-        }
+        payload = self._build_payload(request, stream=True)
         self.last_stream_usage = {"input_tokens": 0, "output_tokens": 0}
 
         try:

@@ -55,6 +55,8 @@ async def test_ollama_chat_maps_successful_response():
                 {"role": "user", "content": "Say hello"},
             ],
             "stream": False,
+            # The schema defaults: the ceiling the request was budgeted against.
+            "options": {"num_predict": 1024, "temperature": 0.7},
         },
     )
 
@@ -78,3 +80,25 @@ async def test_ollama_chat_connection_failure_raises_exception():
     ):
         with pytest.raises(RuntimeError, match="Ollama chat request failed"):
             await provider.chat(request)
+
+
+def ollama_payload(**request_fields) -> dict:
+    request = UnifiedChatRequest(
+        model="llama3.2",
+        messages=[{"role": "user", "content": "Hello"}],
+        **request_fields,
+    )
+    return OllamaProvider()._build_payload(request, stream=False)
+
+
+def test_the_callers_ceiling_reaches_ollama_as_num_predict():
+    """Budget is reserved at max_tokens, so the model must be told to stop there."""
+    payload = ollama_payload(max_tokens=40, temperature=0.2)
+
+    assert payload["options"] == {"num_predict": 40, "temperature": 0.2}
+
+
+def test_unset_generation_options_are_left_to_ollama():
+    payload = ollama_payload(max_tokens=None, temperature=None)
+
+    assert "options" not in payload
