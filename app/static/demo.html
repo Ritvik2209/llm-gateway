@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Gateway Demo</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f0f2f5; --border: #dde1e7;
+    --text: #1a1d23; --muted: #5d6573; --accent: #2f6fed; --accent-text: #ffffff;
+    --ok: #1f8a4c; --ok-bg: #e6f4ec; --warn: #a86400; --warn-bg: #fdf1dc;
+    --bad: #c23b32; --bad-bg: #fbe7e5; --info: #2f6fed; --info-bg: #e7eefd;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111318; --surface: #1a1d24; --surface-2: #232731; --border: #2f3441;
+      --text: #e7e9ee; --muted: #9aa2b1; --accent: #5b8cff; --accent-text: #0d1220;
+      --ok: #4cc286; --ok-bg: #16301f; --warn: #f0b04a; --warn-bg: #33270f;
+      --bad: #f07067; --bad-bg: #3a1a18; --info: #7aa2ff; --info-bg: #1b2540;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111318; --surface: #1a1d24; --surface-2: #232731; --border: #2f3441;
+    --text: #e7e9ee; --muted: #9aa2b1; --accent: #5b8cff; --accent-text: #0d1220;
+    --ok: #4cc286; --ok-bg: #16301f; --warn: #f0b04a; --warn-bg: #33270f;
+    --bad: #f07067; --bad-bg: #3a1a18; --info: #7aa2ff; --info-bg: #1b2540;
+  }
+  * { box-sizing: border-box; }
+  /* Without this, any rule that sets display (such as .pill) silently overrides the hidden
+     attribute, and elements the script hides stay on screen. */
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+  header h1 { margin: 0 0 4px; font-size: 24px; }
+  header p { margin: 0; color: var(--muted); max-width: 70ch; }
+  .links { margin-top: 10px; display: flex; gap: 16px; flex-wrap: wrap; }
+  a { color: var(--accent); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-top: 16px;
+  }
+  .card h2 { margin: 0 0 10px; font-size: 16px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  button {
+    font: inherit; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text); padding: 8px 14px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.danger { border-color: var(--bad); color: var(--bad); background: transparent; }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tab[aria-selected="true"] { border-color: var(--accent); color: var(--accent); background: var(--info-bg); }
+  textarea {
+    width: 100%; min-height: 84px; resize: vertical; font: inherit; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+  .chip { font-size: 13px; padding: 4px 10px; border-radius: 999px; }
+  .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px;
+    font-weight: 600; white-space: nowrap;
+  }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .warn { color: var(--warn); background: var(--warn-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .info { color: var(--info); background: var(--info-bg); }
+  .answer {
+    white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2);
+    border-radius: 8px; padding: 12px; margin-top: 10px;
+  }
+  .meta { display: flex; gap: 8px 16px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .note { margin-top: 10px; padding: 10px 12px; border-radius: 8px; font-size: 14px; }
+  .config { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 14px; margin-top: 10px; }
+  .config dt { color: var(--muted); }
+  .config dd { margin: 0; overflow-wrap: anywhere; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  ol.steps { margin: 0; padding-left: 20px; }
+  ol.steps li { margin: 4px 0; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .two > .card { margin-top: 0; }
+  /* Grid items default to min-width: auto, so the unwrapped log table would otherwise widen
+     the whole page on a phone instead of scrolling inside its own box. */
+  .two > * { min-width: 0; }
+  @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LLM Gateway demo</h1>
+    <p>A live instance of a gateway that sits between teams and LLM providers. Every request
+      below goes through the real gateway: authentication, rate limiting, content policy,
+      budget reservation, routing with fallback, and a circuit breaker per provider.</p>
+    <div class="links small">
+      <a href="https://github.com/Ritvik2209/llm-gateway" target="_blank" rel="noopener">Source on GitHub</a>
+      <a href="/docs" target="_blank" rel="noopener">API docs</a>
+      <a id="grafana-link" href="#" target="_blank" rel="noopener" hidden>Live Grafana dashboards</a>
+    </div>
+  </header>
+
+  <section class="card" aria-labelledby="provider-heading">
+    <div class="row">
+      <div class="grow">
+        <h2 id="provider-heading">Groq status</h2>
+        <div class="row small">
+          <span id="outage-pill" class="pill ok">No outage</span>
+          <span id="circuit-pill" class="pill ok">Circuit closed</span>
+        </div>
+        <p id="circuit-text" class="small muted" style="margin:8px 0 0">Loading…</p>
+      </div>
+      <button id="outage-btn" class="danger">Simulate Groq outage</button>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="team-heading">
+    <h2 id="team-heading">Team</h2>
+    <div id="tabs" class="tabs" role="tablist"></div>
+    <dl id="team-config" class="config"></dl>
+  </section>
+
+  <section class="card" aria-labelledby="ask-heading">
+    <h2 id="ask-heading">Send a request</h2>
+    <textarea id="prompt" aria-label="Prompt">Explain the circuit breaker pattern in software in two sentences.</textarea>
+    <div id="chips" class="chips"></div>
+    <div class="row">
+      <button id="send-btn" class="primary">Send</button>
+      <button id="burst-btn">Send 25 quick requests</button>
+      <span id="busy" class="small muted"></span>
+    </div>
+    <div id="result" hidden>
+      <div class="row" style="margin-top:14px">
+        <span id="res-status" class="pill"></span>
+        <span id="res-provider" class="pill"></span>
+        <span id="res-budget" class="pill warn" hidden>Budget over 80%</span>
+      </div>
+      <div id="res-note" class="note" hidden></div>
+      <div id="res-answer" class="answer"></div>
+      <div id="res-meta" class="meta"></div>
+    </div>
+  </section>
+
+  <div class="two">
+    <section class="card" aria-labelledby="log-heading">
+      <h2 id="log-heading">Recent requests</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Team</th><th>Status</th><th>Served by</th><th>Latency</th></tr></thead>
+          <tbody id="log"><tr><td colspan="5" class="muted">Nothing sent yet.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="try-heading">
+      <h2 id="try-heading">What to try</h2>
+      <ol class="steps small">
+        <li><strong>Ask a question.</strong> Groq answers it.</li>
+        <li><strong>Simulate an outage</strong>, then send about five requests. The first few
+          take ~3.5 s longer while the gateway retries Groq, then the circuit opens and the
+          fallback becomes instant.</li>
+        <li><strong>Wait for the outage to end.</strong> After the cooldown, the next request
+          tests Groq again and the circuit closes.</li>
+        <li><strong>Send 25 quick requests.</strong> The team allows a set number per minute,
+          so the rest are rejected with 429. The limit is shared by everyone on this page.</li>
+        <li><strong>Switch to the policy team</strong> and try the social security number
+          prompt. It is blocked with 400 before any provider sees it.</li>
+      </ol>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var MAX_TOKENS = 512;
+  var BURST_SIZE = 25;
+  var state = { teams: [], team: null, status: null, log: [], busy: false };
+
+  function $(id) { return document.getElementById(id); }
+
+  function setPill(el, text, kind) {
+    el.textContent = text;
+    el.className = "pill " + kind;
+  }
+
+  function fmtSeconds(value) { return Math.ceil(value) + " s"; }
+
+  // ---- Provider status -------------------------------------------------------------
+
+  function renderStatus() {
+    var s = state.status;
+    if (!s) { return; }
+    if (s.outage_remaining_seconds > 0) {
+      setPill($("outage-pill"), "Simulated outage: " + fmtSeconds(s.outage_remaining_seconds) + " left", "bad");
+      $("outage-btn").disabled = true;
+      $("outage-btn").textContent = "Outage running";
+    } else {
+      setPill($("outage-pill"), "No outage", "ok");
+      $("outage-btn").disabled = false;
+      $("outage-btn").textContent = "Simulate Groq outage (" + s.outage_seconds + " s)";
+    }
+
+    var text;
+    if (s.circuit_state === "open") {
+      setPill($("circuit-pill"), "Circuit open", "bad");
+      text = s.circuit_retry_in_seconds > 0
+        ? "Groq is being skipped, so requests go straight to the fallback. One trial request is allowed in " + fmtSeconds(s.circuit_retry_in_seconds) + "."
+        : "The cooldown is over. The next request will be sent to Groq as a trial.";
+    } else if (s.circuit_state === "half_open") {
+      setPill($("circuit-pill"), "Circuit half-open", "warn");
+      text = "One trial request is going to Groq. Success closes the circuit; failure opens it again.";
+    } else {
+      setPill($("circuit-pill"), "Circuit closed", "ok");
+      text = "Requests go to Groq first. After 4 failed requests in a row the circuit opens and Groq is skipped for 30 s.";
+    }
+    $("circuit-text").textContent = text;
+
+    if (s.grafana_url) {
+      $("grafana-link").href = s.grafana_url;
+      $("grafana-link").hidden = false;
+    }
+  }
+
+  function refreshStatus() {
+    return fetch("/demo/status")
+      .then(function (r) { return r.json(); })
+      .then(function (s) { state.status = s; renderStatus(); })
+      .catch(function () { $("circuit-text").textContent = "Could not reach the gateway."; });
+  }
+
+  $("outage-btn").addEventListener("click", function () {
+    $("outage-btn").disabled = true;
+    fetch("/demo/outage", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (s) { state.status = s; renderStatus(); })
+      .catch(function () { $("outage-btn").disabled = false; });
+  });
+
+  // ---- Teams -----------------------------------------------------------------------
+
+  function hasPolicies(team) {
+    return Boolean(team.mandatory_system_prompt || team.response_disclaimer || team.blocked_pattern_count);
+  }
+
+  function addConfigRow(list, label, value) {
+    var dt = document.createElement("dt");
+    var dd = document.createElement("dd");
+    dt.textContent = label;
+    dd.textContent = value;
+    list.appendChild(dt);
+    list.appendChild(dd);
+  }
+
+  function renderTeam() {
+    var team = state.team;
+    var list = $("team-config");
+    list.textContent = "";
+    if (!team) { return; }
+    addConfigRow(list, "Shows", hasPolicies(team) ? "Content policy and prompt enrichment" : "Failover, circuit breaking and rate limiting");
+    addConfigRow(list, "Provider chain", team.provider_chain.join(" → "));
+    var limits = team.requests_per_minute + " requests/min";
+    if (team.tokens_per_minute) { limits += " · " + team.tokens_per_minute.toLocaleString() + " tokens/min"; }
+    limits += " · $" + Number(team.monthly_budget_usd).toFixed(2) + "/month";
+    addConfigRow(list, "Limits", limits);
+    if (team.mandatory_system_prompt) { addConfigRow(list, "Mandatory prompt", team.mandatory_system_prompt); }
+    if (team.blocked_pattern_count) { addConfigRow(list, "Blocked patterns", team.blocked_pattern_count + " (e.g. social security and card numbers)"); }
+    if (team.response_disclaimer) { addConfigRow(list, "Disclaimer", team.response_disclaimer); }
+    addConfigRow(list, "API key", team.api_key + " (public on purpose; the limits above are what protect it)");
+    renderChips();
+  }
+
+  function renderTabs() {
+    var tabs = $("tabs");
+    tabs.textContent = "";
+    state.teams.forEach(function (team) {
+      var b = document.createElement("button");
+      b.className = "tab";
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", String(team === state.team));
+      b.textContent = team.team_id;
+      b.addEventListener("click", function () { state.team = team; renderTabs(); renderTeam(); });
+      tabs.appendChild(b);
+    });
+  }
+
+  function renderChips() {
+    var samples = [
+      "Explain the circuit breaker pattern in software in two sentences.",
+      "Write a haiku about rate limiting."
+    ];
+    if (state.team && state.team.mandatory_system_prompt) {
+      samples.push("Should I move all my savings into a single stock?");
+    }
+    if (state.team && state.team.blocked_pattern_count) {
+      samples.push("My social security number is 123-45-6789. Can you remember it?");
+    }
+    var chips = $("chips");
+    chips.textContent = "";
+    samples.forEach(function (text) {
+      var b = document.createElement("button");
+      b.className = "chip";
+      b.textContent = text;
+      b.addEventListener("click", function () { $("prompt").value = text; });
+      chips.appendChild(b);
+    });
+  }
+
+  function loadTeams() {
+    return fetch("/demo/teams")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        state.teams = data.teams || [];
+        state.team = state.teams[0] || null;
+        if (!state.team) {
+          $("team-config").textContent = "No public demo teams are configured on this instance.";
+          $("send-btn").disabled = true;
+          $("burst-btn").disabled = true;
+          return;
+        }
+        renderTabs();
+        renderTeam();
+      });
+  }
+
+  // ---- Requests --------------------------------------------------------------------
+
+  function chatModel(team) {
+    return team.allowed_models.indexOf("chat-demo") !== -1 ? "chat-demo" : team.allowed_models[0];
+  }
+
+  // The burst only exists to show the rate limiter, so it asks for the mock model when the
+  // team allows it: rejected or not, it should not spend Groq quota to make its point.
+  function burstModel(team) {
+    return team.allowed_models.indexOf("mock-model") !== -1 ? "mock-model" : chatModel(team);
+  }
+
+  function send(team, model, prompt) {
+    var started = performance.now();
+    return fetch("/v1/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + team.api_key },
+      body: JSON.stringify({ model: model, max_tokens: MAX_TOKENS, messages: [{ role: "user", content: prompt }] })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        return {
+          status: r.status,
+          body: body,
+          ms: Math.round(performance.now() - started),
+          retryAfter: r.headers.get("Retry-After"),
+          budgetWarning: r.headers.get("X-Budget-Warning") === "true",
+          team: team.team_id
+        };
+      });
+    }).catch(function () {
+      return { status: 0, body: { detail: "Network error: the gateway could not be reached." }, ms: Math.round(performance.now() - started), team: team.team_id };
+    });
+  }
+
+  function statusKind(code) {
+    if (code === 200) { return "ok"; }
+    if (code === 429 || code === 402) { return "warn"; }
+    return "bad";
+  }
+
+  function statusLabel(code) {
+    var names = { 200: "200 OK", 400: "400 Blocked", 401: "401 Unauthorized", 402: "402 Budget", 403: "403 Forbidden", 429: "429 Rate limited", 503: "503 Unavailable", 0: "No response" };
+    return names[code] || String(code);
+  }
+
+  function addLog(result) {
+    state.log.unshift({
+      time: new Date().toLocaleTimeString([], { hour12: false }),
+      team: result.team,
+      status: result.status,
+      provider: result.status === 200 ? result.body.provider : "—",
+      ms: result.ms
+    });
+    state.log = state.log.slice(0, 15);
+    var body = $("log");
+    body.textContent = "";
+    state.log.forEach(function (entry) {
+      var tr = document.createElement("tr");
+      [entry.time, entry.team, null, entry.provider, entry.ms + " ms"].forEach(function (value, i) {
+        var td = document.createElement("td");
+        if (i === 2) {
+          var pill = document.createElement("span");
+          pill.className = "pill " + statusKind(entry.status);
+          pill.textContent = statusLabel(entry.status);
+          td.appendChild(pill);
+        } else {
+          td.textContent = value;
+          if (i === 4) { td.className = "mono"; }
+        }
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  function showResult(result) {
+    $("result").hidden = false;
+    setPill($("res-status"), statusLabel(result.status), statusKind(result.status));
+    $("res-budget").hidden = !result.budgetWarning;
+
+    var note = $("res-note");
+    var meta = $("res-meta");
+    meta.textContent = "";
+    note.hidden = true;
+
+    function addMeta(text) {
+      var span = document.createElement("span");
+      span.textContent = text;
+      meta.appendChild(span);
+    }
+
+    if (result.status === 200) {
+      var b = result.body;
+      var primary = state.team && state.team.provider_chain[0];
+      var fellBack = primary && b.provider !== primary;
+      setPill($("res-provider"), b.provider === "mock" ? "Served by mock (canned backup reply)" : "Served by " + b.provider, fellBack ? "warn" : "info");
+      $("res-provider").hidden = false;
+      if (fellBack) {
+        note.hidden = false;
+        note.className = "note warn";
+        note.textContent = primary + " was unavailable, so the gateway fell back to " + b.provider + ". The caller still got a 200.";
+      }
+      $("res-answer").textContent = b.content || "(The model returned no text. Try again, or ask a shorter question.)";
+      addMeta("Model: " + b.model);
+      addMeta("Tokens: " + b.input_tokens + " in / " + b.output_tokens + " out");
+      addMeta("Round trip: " + result.ms + " ms");
+    } else {
+      $("res-provider").hidden = true;
+      var detail = (result.body && result.body.detail) || "The request failed.";
+      $("res-answer").textContent = typeof detail === "string" ? detail : JSON.stringify(detail, null, 2);
+      note.hidden = false;
+      note.className = "note " + statusKind(result.status);
+      if (result.status === 429) {
+        note.textContent = "Rejected by the rate limiter before any provider was called. Retry after " + (result.retryAfter || "60") + " s. The limit is per team, so everyone on this page shares it.";
+      } else if (result.status === 400) {
+        note.textContent = "Blocked by the team's content policy. The prompt was never sent to a provider and the team's budget did not move.";
+      } else if (result.status === 402) {
+        note.textContent = "The team's monthly budget would be exceeded, so the request was refused before calling a provider.";
+      } else {
+        note.hidden = true;
+      }
+      addMeta("Round trip: " + result.ms + " ms");
+    }
+  }
+
+  function setBusy(text) {
+    state.busy = Boolean(text);
+    $("busy").textContent = text || "";
+    $("send-btn").disabled = state.busy || !state.team;
+    $("burst-btn").disabled = state.busy || !state.team;
+  }
+
+  $("send-btn").addEventListener("click", function () {
+    var prompt = $("prompt").value.trim();
+    if (!prompt || !state.team) { return; }
+    var team = state.team;
+    setBusy("Waiting for the gateway…");
+    send(team, chatModel(team), prompt).then(function (result) {
+      addLog(result);
+      showResult(result);
+      setBusy("");
+      refreshStatus();
+    });
+  });
+
+  $("burst-btn").addEventListener("click", function () {
+    if (!state.team) { return; }
+    var team = state.team;
+    setBusy("Sending " + BURST_SIZE + " requests…");
+    var requests = [];
+    for (var i = 0; i < BURST_SIZE; i++) {
+      requests.push(send(team, burstModel(team), "Burst request " + (i + 1)));
+    }
+    Promise.all(requests).then(function (results) {
+      var counts = {};
+      results.forEach(function (r) { counts[r.status] = (counts[r.status] || 0) + 1; addLog(r); });
+      var limited = results.filter(function (r) { return r.status === 429; });
+      $("result").hidden = false;
+      setPill($("res-status"), BURST_SIZE + " requests sent", "info");
+      $("res-provider").hidden = true;
+      $("res-budget").hidden = true;
+      $("res-answer").textContent = Object.keys(counts).map(function (code) {
+        return counts[code] + " × " + statusLabel(Number(code));
+      }).join("\n");
+      $("res-meta").textContent = "";
+      var note = $("res-note");
+      note.hidden = false;
+      note.className = "note " + (limited.length ? "warn" : "ok");
+      if (limited.length === results.length) {
+        note.textContent = "The team's " + team.requests_per_minute + "-requests-per-minute window was already full, so every request was rejected with 429 before reaching any provider. The window slides, so capacity returns over the next minute.";
+      } else if (limited.length) {
+        note.textContent = "The team allows " + team.requests_per_minute + " requests per minute, so the rest were rejected with 429 before reaching any provider. The window slides, so capacity returns over the next minute.";
+      } else {
+        note.textContent = "Every request fitted inside the team's limit, so none were rejected. Send another burst to go over it.";
+      }
+      setBusy("");
+    });
+  });
+
+  // ---- Start -----------------------------------------------------------------------
+
+  loadTeams().catch(function () {
+    $("team-config").textContent = "Could not load the demo teams.";
+  });
+  refreshStatus();
+  setInterval(function () {
+    if (!document.hidden) { refreshStatus(); }
+  }, 2000);
+})();
+</script>
+</body>
+</html>

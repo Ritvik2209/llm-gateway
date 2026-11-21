@@ -39,12 +39,16 @@ from app.enrichment import (
 )
 from app.config import (
     CONFIG_RELOAD_INTERVAL_SECONDS,
+    DEMO_GRAFANA_URL,
+    DEMO_MODE,
+    DEMO_OUTAGE_SECONDS,
     HEALTH_CHECK_INTERVAL_SECONDS,
     TEAMS_CONFIG_PATH,
     MODEL_CATALOG_PATH,
     load_model_catalog,
     load_teams_config,
 )
+from app.demo import build_demo_router
 from app.health import HealthMonitor
 from app.metrics import (
     CIRCUIT_BREAKER_STATE as gateway_circuit_breaker_state,
@@ -68,6 +72,7 @@ from app.providers.errors import ProviderError
 from app.providers.groq_provider import GroqProvider
 from app.providers.mock_provider import MockProvider
 from app.providers.ollama_provider import OllamaProvider
+from app.providers.outage import OutageSwitch
 from app.rate_limiter import (
     RATE_LIMIT_WINDOW_SECONDS,
     check_rate_limit,
@@ -83,6 +88,12 @@ logger = logging.getLogger(__name__)
 ollama_provider = OllamaProvider()
 mock_provider = MockProvider(should_fail=False)
 groq_provider = GroqProvider()
+if DEMO_MODE:
+    # Lets demo visitors take Groq down for a minute and watch fallback and the circuit
+    # breaker respond. The module-level object itself is wrapped, not just its entry in
+    # `providers`, because the request path rebuilds its provider map from these objects
+    # (see `runtime_providers` in `chat`).
+    groq_provider = OutageSwitch(groq_provider)
 providers: dict[str, LLMProvider] = {
     ollama_provider.provider_name: ollama_provider,
     mock_provider.provider_name: mock_provider,
@@ -235,6 +246,11 @@ app.state.config_loaded_at = datetime.now(timezone.utc)
 app.state.redis_client = get_redis_client()
 app.state.providers = providers
 app.state.circuit_breaker = circuit_breaker
+
+if DEMO_MODE:
+    app.include_router(
+        build_demo_router(groq_provider, DEMO_OUTAGE_SECONDS, DEMO_GRAFANA_URL)
+    )
 
 
 @app.get("/health")

@@ -27,6 +27,14 @@ MODEL_CATALOG_PATH = os.getenv("MODEL_CATALOG_PATH", "config/models.yaml")
 # leaving the explicit admin endpoint as the only way to apply an edit.
 CONFIG_RELOAD_INTERVAL_SECONDS = int(os.getenv("CONFIG_RELOAD_INTERVAL_SECONDS", "5"))
 
+# A demo instance serves a page at "/" and lets any visitor simulate a Groq outage. Off by
+# default: the outage switch is an unauthenticated endpoint that takes a provider down,
+# which is only acceptable on an instance that serves no real tenants.
+DEMO_MODE = os.getenv("DEMO_MODE", "false").strip().lower() == "true"
+DEMO_OUTAGE_SECONDS = int(os.getenv("DEMO_OUTAGE_SECONDS", "60"))
+# Linked from the demo page when set, so visitors can watch the dashboards react.
+DEMO_GRAFANA_URL = os.getenv("DEMO_GRAFANA_URL", "")
+
 MODEL_PRICING = {
     "llama3.2": {
         "input_price_per_1k": 0.0,
@@ -116,6 +124,15 @@ def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, An
                     f'"{pattern}": {exc}'
                 ) from exc
 
+        # The demo page publishes the key of every public_demo team. An admin key published
+        # that way would hand the control plane to anyone who opened the page, so the
+        # combination is refused here, where the reload path keeps the previous config.
+        if team.get("public_demo", False) and team.get("is_admin", False):
+            raise ValueError(
+                f'Team "{team["team_id"]}" is both public_demo and is_admin; a key the '
+                "demo page publishes cannot be an admin key."
+            )
+
         teams_by_api_key[team["api_key"]] = {
             "team_id": team["team_id"],
             "allowed_models": team.get("allowed_models", []),
@@ -137,6 +154,8 @@ def load_teams_config(path: str = "config/teams.yaml") -> dict[str, dict[str, An
             "tokens_per_minute": team.get("tokens_per_minute", 0),
             "monthly_budget_usd": team.get("monthly_budget_usd", 0.0),
             "is_admin": team.get("is_admin", False),
+            # Whether the demo page may publish this team's key. Read only in DEMO_MODE.
+            "public_demo": team.get("public_demo", False),
         }
 
     return teams_by_api_key

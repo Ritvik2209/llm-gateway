@@ -56,3 +56,12 @@ tiers:
   # Test tier. Kept separate from the real ones so mock cannot serve production traffic.
   chat-test:
     mock: "mock-model"
+
+  # Public demo only. The one deliberate exception to keeping mock out of a real chain: a
+  # demo instance has no Ollama, so mock is the fallback that keeps the page answering when
+  # Groq is down. Its reply is the fixed text "mock response", which the demo page labels as
+  # a canned backup rather than presenting as a model's answer. No team outside a demo
+  # deployment is allowed this tier.
+  chat-demo:
+    groq: "openai/gpt-oss-20b"
+    mock: "mock-model"
