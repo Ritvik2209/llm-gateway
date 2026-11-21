@@ -113,3 +113,19 @@ def test_unset_generation_options_are_left_to_groq():
 
     assert options == {}
 
+
+@pytest.mark.asyncio
+async def test_chat_counts_reasoning_tokens_once():
+    result, _sent = await run_chat(make_request())
+
+    assert result.input_tokens == 74
+    # 49, not 49 + 36: the reasoning tokens are already inside completion_tokens.
+    assert result.output_tokens == 49
+    assert result.input_tokens + result.output_tokens == USAGE["total_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_counts_reasoning_tokens_once():
+    provider, _chunks, _sent = await run_stream(make_request(stream=True))
+
+    assert provider.last_stream_usage == {"input_tokens": 74, "output_tokens": 49}

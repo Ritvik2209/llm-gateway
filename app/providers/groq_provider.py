@@ -68,6 +68,13 @@ class GroqProvider(LLMProvider):
         return options
 
     def _build_usage(self, usage: dict) -> dict[str, int]:
+        """Token counts as billed.
+
+        completion_tokens already includes reasoning tokens; total_tokens is prompt plus
+        completion, with nothing added for reasoning. Adding reasoning_tokens on top counted
+        them twice, overstating output, cost and token-limit usage alike — measured: 100
+        billed tokens were recorded as 184.
+        """
         input_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         completion_details = usage.get("completion_tokens_details") or {}
@@ -75,13 +82,14 @@ class GroqProvider(LLMProvider):
 
         if reasoning_tokens:
             logger.info(
-                "Groq response included %s hidden reasoning tokens",
+                "Groq response spent %s of %s output tokens on hidden reasoning",
                 reasoning_tokens,
+                completion_tokens,
             )
 
         return {
             "input_tokens": input_tokens,
-            "output_tokens": completion_tokens + reasoning_tokens,
+            "output_tokens": completion_tokens,
         }
 
     async def chat(self, request: UnifiedChatRequest) -> UnifiedChatResponse:
