@@ -23,6 +23,9 @@ services:
 
   prometheus:
     ports: !reset []
+    environment:
+      # So the dashboard links in Slack alerts open this server's Grafana, not localhost.
+      - GRAFANA_URL=https://${GRAFANA_DOMAIN}
     restart: unless-stopped
 
   alertmanager:

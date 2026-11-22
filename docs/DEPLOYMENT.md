@@ -156,7 +156,5 @@ written back into `secrets/teams.yaml`.
   fallback answer is real.
 - **Ollama shows as degraded** on the dashboards, because the gateway probes it once at startup
   and finds nothing. No alert fires for that.
-- **Slack alert links point at `localhost:3000`.** The dashboard links in
-  `monitoring/alerts.yml` are written for the local stack.
 - **Throughput is lower than the published figure.** The ~450 req/s ceiling was measured on a
   laptop; a 1 vCPU server will top out lower.

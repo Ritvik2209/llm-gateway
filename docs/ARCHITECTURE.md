@@ -9,7 +9,7 @@ a model.
 |---|---|
 | Gateway overhead | **1.67 ms** mean (target: <10 ms) |
 | Throughput ceiling | **~450 req/s** single process |
-| Tests | 216, offline, no credentials |
+| Tests | 218, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
 | Application code | 2,624 lines across 21 modules |
 
@@ -656,6 +656,6 @@ Counts of tests, metrics, panels, rules and endpoints were taken from the source
 from memory. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
-Scope as documented: 216 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
+Scope as documented: 218 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
 3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
 roughly 2,800 lines of application code against 3,100 lines of tests across 37 commits.

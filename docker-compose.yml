@@ -15,6 +15,9 @@ services:
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    environment:
+      # The address alert links open; prometheus.yml passes it to alerts.yml.
+      - GRAFANA_URL=http://localhost:3000
     networks:
       - gateway-net
 

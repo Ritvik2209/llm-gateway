@@ -3,6 +3,12 @@ global:
   # How often alert rules are evaluated. Kept close to the scrape interval so an alert
   # does not lag the data it is based on.
   evaluation_interval: 15s
+  # Where this environment's Grafana is, for the dashboard links in alerts.yml: they read it
+  # as $externalLabels.grafana_url, so a Slack alert from the server links to the server's
+  # Grafana and one from a laptop to localhost. Rule files cannot read the environment, but
+  # Prometheus 3 expands ${VAR} here. Compose sets GRAFANA_URL.
+  external_labels:
+    grafana_url: ${GRAFANA_URL}
 
 rule_files:
   - alerts.yml
