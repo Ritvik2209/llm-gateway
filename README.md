@@ -219,6 +219,11 @@ tabs come from `config/teams.demo.yaml`: the server's two, the `groq → ollama 
 Ollama-first team, and the two tenants this README documents. Groq and Ollama each get an
 outage button.
 
+To give the dashboards something to show, `python scripts/traffic.py` sends ten minutes of
+mixed traffic through every team the page publishes, with a Groq outage, an Ollama outage, a
+rate-limit burst, oversized prompts and blocked prompts along the way. `--base-url` points it
+at the server instead, where it finds only the Groq and mock teams and drives those.
+
 `docker-compose.prod.yml` adds HTTPS through Caddy, closes every port except 80 and 443, persists
 Redis, and reads a private teams file kept out of git. Server setup, step by step, is in
 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.

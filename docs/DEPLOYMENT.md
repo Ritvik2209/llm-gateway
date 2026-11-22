@@ -119,6 +119,16 @@ Then open `https://api.example.com/` and follow "What to try" on the page. Its "
 section links all four Grafana dashboards; `https://grafana.example.com/` itself should open on
 the Operations dashboard without asking for a login.
 
+To fill those dashboards, run the traffic script from your own machine:
+
+```bash
+python scripts/traffic.py --base-url https://api.example.com --minutes 5
+```
+
+It sends steady traffic through both demo teams, simulates a Groq outage, and goes over the
+request and token limits. It runs as the public demo teams, so visitors share those limits
+while it runs.
+
 ## Updating
 
 ```bash
