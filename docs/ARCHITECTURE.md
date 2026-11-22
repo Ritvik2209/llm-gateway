@@ -134,10 +134,14 @@ a different physical model per provider. `chat-general` is `openai/gpt-oss-20b` 
 `llama3.2` on Ollama. The caller names the tier; the gateway rebinds the outbound request
 per candidate.
 
-Two tiers cross providers, and they express *different* trades — which is the reason a tier
-maps per provider rather than naming one model. `chat-general` falls back from hosted to
+Three tiers cross providers, and they express *different* trades — which is the reason a
+tier maps per provider rather than naming one model. `chat-general` falls back from hosted to
 local, trading latency for availability. `chat-large` falls back from Groq's
-`openai/gpt-oss-120b` to local inference, trading capability for it.
+`openai/gpt-oss-120b` to local inference, trading capability for it. `chat-demo` names all
+three providers, Groq then Ollama then mock, for the demo teams. On the demo server those
+teams may not use Ollama, so the first routing stage below drops it and the same tier falls
+straight from Groq to mock: one tier definition, two chains, decided by each team's
+allowlist.
 
 ```mermaid
 flowchart TD
@@ -165,8 +169,8 @@ which is why they are separate rather than one predicate.
 
 ## 5. Tenancy and enforcement
 
-Four teams, each with an API key, allowed model set, allowed provider set, provider
-priority order, optional injected system prompt, request rate, token rate and monthly
+Four teams in the default configuration, each with an API key, allowed model set, allowed
+provider set, provider priority order, optional injected system prompt, request rate, token rate and monthly
 budget.
 
 ### Rate limiting — two dimensions, one atomic script
@@ -183,7 +187,7 @@ as a sliding window over two Redis sorted sets.
 flowchart LR
   subgraph K ["Redis keys per team"]
     direction TB
-    K1["ratelimit:requests:team<br/><i>ZSET — score = timestamp</i>"]
+    K1["ratelimit:team<br/><i>ZSET — score = timestamp</i>"]
     K2["ratelimit:tokens:team<br/><i>ZSET — member = count:uuid</i>"]
     K3["budget:team:month<br/><i>FLOAT — INCRBYFLOAT</i>"]
     K4["audit<br/><i>LIST — capped at 1000</i>"]
@@ -413,6 +417,14 @@ moved `GatewayCircuitBreakerOpen` to firing, and Alertmanager reported
 `alertmanager_notifications_total{integration="slack"} = 1` with every
 `alertmanager_notifications_failed_total{integration="slack"}` series at zero.
 
+**Each alert links to its own environment's Grafana.** Every rule carries a link to the
+dashboard that explains it, and those links were once hard-coded to `localhost:3000` — so an
+alert from the public server would have opened nothing. Rule files cannot read environment
+variables, but Prometheus 3 expands them in `external_labels`, which rule templates can read.
+Compose sets `GRAFANA_URL` per environment, `prometheus.yml` turns it into an external label,
+and each link is built from `$externalLabels.grafana_url`. A test fails if a link is
+hard-coded again or names a dashboard that does not exist.
+
 A local sink (`scripts/alert_sink.py`) remains the way this path is verified on a machine
 with no Slack credential — it prints exactly what Slack would receive, which is what makes
 the *template* verifiable without a secret. Switching back to it is one word in the route.
@@ -421,8 +433,9 @@ the *template* verifiable without a secret. Switching back to it is one word in 
 
 Eight admin endpoints behind an `is_admin` flag that defaults to false, so tenant keys
 cannot read cross-provider health or change gateway state. Limits can be adjusted at
-runtime, and the change is **written back into `config/teams.yaml`** through a round-trip YAML
-writer that preserves comments and formatting.
+runtime, and the change is **written back into the teams file it was loaded from** —
+`config/teams.yaml` by default, `secrets/teams.yaml` on the demo server — through a round-trip
+YAML writer that preserves comments and formatting.
 
 > **Why write back rather than overlay in Redis.** A Redis overlay is simpler and faster. It
 > also introduces exactly the failure this system exists to prevent: the declared
@@ -475,6 +488,12 @@ replicas rather than optimisation.
 One `docker compose up` brings up all five containers with Grafana's datasource and
 dashboards already provisioned. The gateway runs as a **single uvicorn process**; the
 published throughput figure is therefore a single-process number.
+
+Every image and every Python package is pinned to an exact release. Unpinned, each build took
+whatever was newest: that is how a pytest release that changed how `monkeypatch` restores
+attributes broke 70 tests in CI for eight days while every local run passed, and an image
+would do the same to the server on its next rebuild. A test fails if anything is left
+unpinned, so an upgrade is a deliberate edit rather than a side effect of building.
 
 | State | Lives in | Across replicas |
 |---|---|---|
@@ -619,7 +638,10 @@ instruction, "replace the placeholder `api_url` with your real URL", would have 
 live credential and made rotating it a history rewrite. It reads `api_url_file` instead,
 from a gitignored file mounted into the container, with a committed `.example` showing the
 shape. Provider API keys follow the same rule through `.env`, which is gitignored with an
-`.env.example` beside it. The test suite needs no credential at all, which is why CI runs it
+`.env.example` beside it, and so does the demo server's admin key, in `secrets/teams.yaml`. The
+demo teams' keys are the deliberate exception: the demo page publishes them, so their rate
+limits and budget caps are what protect the Groq key, and the gateway refuses to load a team
+that is both public and admin. The test suite needs no credential at all, which is why CI runs it
 with no secrets configured.
 
 **What is the weakest part of this system?**
