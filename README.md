@@ -8,6 +8,50 @@ This is a portfolio project, built to demonstrate the production-style patterns 
 
 > **[Architecture &amp; design record &rarr;](docs/ARCHITECTURE.md)** &mdash; the full system design: request lifecycle, routing, enforcement and resilience with diagrams, the measured performance numbers and how they were taken, and the trade-offs behind each decision. Read that if you want the *why*; this README covers running it.
 
+## Review this project
+
+Three ways in: run the tests, run the demo page, or read the code.
+
+**Run the tests.** Python 3.12, no Docker, no credentials, no network; about five seconds.
+
+```bash
+git clone https://github.com/Ritvik2209/llm-gateway.git && cd llm-gateway
+pip install -r requirements.txt
+pytest
+```
+
+**Run the demo page.** Docker only. A page at `/` sends requests as six demo teams, takes Groq
+or Ollama down for 60 seconds to show retries, fallback and the circuit breaker, runs into the
+rate limit, and links the Grafana dashboards.
+
+```bash
+cp .env.example .env    # add a free Groq key (console.groq.com) for the Groq teams
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+python scripts/traffic.py --minutes 3    # optional, after the pip install above: traffic for the dashboards
+```
+
+Open http://localhost:8000/ and http://localhost:3000/. What works without each piece:
+
+- **No Groq key:** teams whose chain starts at Groq answer `502`. That is deliberate: a rejected
+  credential is a misconfiguration, and falling back would hide it while moving the traffic and
+  its cost to another provider. The mock model and the outage button still work.
+- **No Ollama** (`ollama pull llama3.2` on the host): Ollama teams fall back to mock or, with no
+  fallback configured, answer `503`, exactly as in a real outage.
+- **No Slack webhook:** alerts still fire and are visible in Alertmanager; they are just not
+  delivered anywhere.
+
+**Read the code.** Where each behaviour lives:
+
+| Behaviour | Where |
+|---|---|
+| The request path, gate by gate | `chat` and `call_chat_with_fallback` in `app/main.py` |
+| Rate limiting: both limits in one atomic Redis script | `app/rate_limiter.py` |
+| Budget: reserve before the call, reconcile or release after | `app/budget.py` |
+| Retry, circuit breaker, error taxonomy | `app/retry.py`, `app/circuit_breaker.py`, `app/providers/errors.py` |
+| Model tiers and capability routing | `app/models/catalog.py`, `config/models.yaml` |
+| Demo fault injection | `app/providers/outage.py`, `app/demo.py` |
+| End-to-end tests through the real HTTP path | `tests/test_integration.py` |
+
 ## Features
 
 - **Multi-provider routing** across three implemented providers: **Ollama** (local models), **Groq** (hosted inference), and a built-in **Mock** provider for deterministic testing.
@@ -124,6 +168,15 @@ Thresholds are the defaults in `app/circuit_breaker.py`: `failure_threshold=4`, 
 | `POST` | `/admin/config/reload` | Apply config from disk without restarting; 409 if it does not parse — **admin key required** |
 | `POST` | `/admin/mock/toggle-failure` | Force the mock provider to fail, for testing failover — **admin key required** |
 
+Four more exist only when `DEMO_MODE=true`, and take no key; see [Public demo deployment](#public-demo-deployment):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/` | The demo page |
+| `GET` | `/demo/teams` | The published demo teams: keys, models and where each is routed, limits, policies |
+| `GET` | `/demo/status` | Outage and circuit state for each provider the demo teams use |
+| `POST` | `/demo/outage/{provider}` | Start a time-limited simulated outage; never extends a running one |
+
 ## Quick Start
 
 **Prerequisites:** Docker and Docker Compose. Optionally [Ollama](https://ollama.com) and a [Groq](https://console.groq.com) API key.
@@ -146,10 +199,10 @@ GROQ_API_KEY=your_groq_api_key_here
 Start the stack:
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
-This brings up four containers: the gateway on `:8000`, Redis on `:6379`, Prometheus on `:9090`, and Grafana on `:3000`.
+This brings up five containers: the gateway on `:8000`, Redis on `:6379`, Prometheus on `:9090`, Alertmanager on `:9093`, and Grafana on `:3000`.
 
 Send a request. This example uses the `team-loadtest` demo key, which routes only to the mock provider and therefore works immediately with no external dependencies:
 
@@ -176,7 +229,7 @@ curl -s http://127.0.0.1:8000/v1/chat \
 Returns HTTP 200. `id` is a fresh UUID per request, so yours will differ; every other field is fixed
 for the mock provider.
 
-To exercise a real provider, use the `team-alpha` key (`demo-team-alpha-local-only`), whose priority chain is `groq → ollama → mock` and which is configured with a system prompt that forces French replies. The demo keys in `config/teams.yaml` are local-only placeholders, not secrets; replace them before running this anywhere real.
+To exercise a real provider, use the `team-alpha` key (`demo-team-alpha-local-only`), whose priority chain is `groq → ollama` and which is configured with a system prompt that forces French replies. The demo keys in `config/teams.yaml` are local-only placeholders, not secrets; replace them before running this anywhere real.
 
 ## Demo
 
@@ -186,7 +239,7 @@ enforcement, retry classification, circuit-breaker transitions, the admin API, v
 hot reload, and the cost and health metrics:
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 python scripts/demo.py          # 34 checks
 ```
 

@@ -11,7 +11,7 @@ a model.
 | Throughput ceiling | **~450 req/s** single process |
 | Tests | 218, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
-| Application code | 2,624 lines across 21 modules |
+| Application code | 3,746 lines of Python across 24 files; tests 4,859 |
 
 **Part I** is the architecture. **Part II** is the set of challenges this design invites and
 the answers it can support. Every figure here was measured, not estimated; see
@@ -653,9 +653,12 @@ Throughput and latency were measured with `hey` against the running Compose stac
 In-process overhead was taken by reading the histogram's `_sum` and `_count` before and after
 a 500-request run at concurrency 1, giving a mean rather than an interpolated percentile.
 Counts of tests, metrics, panels, rules and endpoints were taken from the source tree, not
-from memory. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
+from memory, and last recounted on 2026-11-22. Line counts are `wc -l` over the `.py` files
+under `app/` and `tests/`, blank lines and comments included; the demo page's HTML is not
+counted. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
 Scope as documented: 218 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
-3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
-roughly 2,800 lines of application code against 3,100 lines of tests across 37 commits.
+3 inhibitions, 11 endpoints plus 4 that exist only in demo mode, 3 providers serving 4 models,
+5 model tiers, 4 teams in the default config (7 in the laptop demo), and 3,746 lines of
+application code against 4,859 lines of tests.
