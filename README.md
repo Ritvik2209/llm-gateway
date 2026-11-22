@@ -207,6 +207,18 @@ On a machine that runs Ollama, a `groq → ollama → mock` demo team shows a Gr
 back to a real local model. Demo mode is off by default, and its routes do not exist unless it
 is on.
 
+The full demo runs on your own machine with one command, given a Groq key in `.env` and Ollama
+running on the host (`ollama pull llama3.2`):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+```
+
+The page is at http://localhost:8000/ and Grafana at http://localhost:3000/, no login. Six team
+tabs come from `config/teams.demo.yaml`: the server's two, the `groq → ollama → mock` chain, an
+Ollama-first team, and the two tenants this README documents. Groq and Ollama each get an
+outage button.
+
 `docker-compose.prod.yml` adds HTTPS through Caddy, closes every port except 80 and 443, persists
 Redis, and reads a private teams file kept out of git. Server setup, step by step, is in
 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
@@ -218,7 +230,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-**213 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, per-provider-model health, streaming resilience, the provider error taxonomy, model tiers, config reload, the admin API, metrics, system-prompt enrichment, and demo mode.
+**216 tests**, all passing, requiring no network access and no credentials. The suite covers auth, schemas, budget math, the rate-limit window, circuit-breaker transitions, provider fallback selection, per-provider-model health, streaming resilience, the provider error taxonomy, model tiers, config reload, the admin API, metrics, system-prompt enrichment, and demo mode.
 
 Fifteen of those are end-to-end integration tests (`tests/test_integration.py`) that drive the full FastAPI request path through `TestClient` — covering the complete request lifecycle, transparent provider fallback with metric assertions, circuit-breaker `closed → open → half_open → closed` transitions, budget reservation, release on failure, and cap enforcement, and rate limiting.
 

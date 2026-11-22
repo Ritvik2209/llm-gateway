@@ -16,15 +16,20 @@ Internet ──443──▶ Caddy ──▶ gateway :8000 ──▶ Groq (hosted
 Only Caddy is reachable from outside. Ollama is not deployed: a 2 GB server cannot run it, so
 the demo tier falls back from Groq to mock instead.
 
-| | Local stack | Demo server |
-|---|---|---|
-| Interface | curl, `/docs`, `scripts/demo.py` | page at `/`, plus `/docs` |
-| Providers | Groq, Ollama, mock | Groq, mock |
-| Teams | `config/teams.yaml` (committed demo keys) | `secrets/teams.yaml` (private, outside git) |
-| Simulated outage | `/admin/mock/toggle-failure`, admin key | page button, Groq, ends after 60 s |
-| Open ports | all, on your machine | 80 and 443 only |
-| `/metrics` | open | 404 from outside; Prometheus reads it internally |
-| Redis data | lost when the container is recreated | kept on a volume |
+| | Local stack | Laptop demo | Demo server |
+|---|---|---|---|
+| Compose files | `docker-compose.yml` | plus `docker-compose.demo.yml` | plus `docker-compose.prod.yml` |
+| Interface | curl, `/docs`, `scripts/demo.py` | page at `/`, plus `/docs` | page at `/`, plus `/docs` |
+| Providers | Groq, Ollama, mock | Groq, Ollama, mock | Groq, mock |
+| Teams | `config/teams.yaml` (committed demo keys) | `config/teams.demo.yaml` (committed, six on the page) | `secrets/teams.yaml` (private, outside git) |
+| Simulated outage | `/admin/mock/toggle-failure`, admin key | page buttons, Groq and Ollama, end after 60 s | page button, Groq, ends after 60 s |
+| Open ports | all, on your machine | all, on your machine | 80 and 443 only |
+| `/metrics` | open | open | 404 from outside; Prometheus reads it internally |
+| Redis data | lost when the container is recreated | lost when the container is recreated | kept on a volume |
+
+The laptop demo is the server's page with Ollama behind it as well; its two server teams are
+copied unchanged, and a test keeps them that way. Each place has its own Prometheus and Grafana,
+scraping only its own gateway.
 
 ## Requirements
 
@@ -128,7 +133,7 @@ written back into `secrets/teams.yaml`.
 
 - **The page shows one outage button per provider the demo teams use.** On this server that is
   Groq only. The commented-out teams in `deploy/teams.example.yaml` add Ollama controls on a
-  server that runs Ollama.
+  server that runs Ollama; the laptop demo runs them.
 - **The outage button changes real state.** It makes the gateway treat Groq as down for 60 s
   (`DEMO_OUTAGE_SECONDS`), for every visitor. The first few requests take about 3.5 s longer
   while the gateway retries, then the circuit opens. After the outage, the circuit stays open

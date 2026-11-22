@@ -45,7 +45,8 @@ teams:
   # Only on a server that runs Ollama (8 GB of RAM or more), with OLLAMA_BASE_URL pointing
   # at it. Each provider a public team's chain names gets its own status row and outage
   # button on the page, so these add Ollama controls; demo-chain shows a Groq outage falling
-  # back to a real model instead of the canned mock reply.
+  # back to a real model instead of the canned mock reply. config/teams.demo.yaml has them
+  # switched on, for the full demo on your own machine (docker-compose.demo.yml).
   #
   # - team_id: "demo-ollama"
   #   api_key: "demo-ollama-key"

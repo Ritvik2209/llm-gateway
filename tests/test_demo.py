@@ -6,6 +6,7 @@ circuit breaker and all — rather than asserting on the switch alone.
 """
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 from app import config as config_module
 from app import main as main_module
 from app.circuit_breaker import CircuitBreaker
-from app.demo import build_demo_router
+from app.demo import build_demo_router, demo_provider_names, public_demo_teams
 from app.health import HealthMonitor
 from app.models.catalog import ModelCatalog
 from app.models.schemas import ChatMessage, UnifiedChatRequest, UnifiedChatResponse
@@ -475,3 +476,48 @@ def test_a_public_admin_team_is_rejected_at_load(tmp_path):
 
     with pytest.raises(ValueError, match="cannot be an admin key"):
         config_module.load_teams_config(str(path))
+
+
+# The two committed teams files a demo instance can run: the server's template and the full
+# laptop demo. Both are loaded as written, so a regex or YAML mistake fails here rather than
+# when the gateway starts.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SERVER_TEAMS = REPO_ROOT / "deploy" / "teams.example.yaml"
+LAPTOP_TEAMS = REPO_ROOT / "config" / "teams.demo.yaml"
+MODEL_CATALOG = REPO_ROOT / "config" / "models.yaml"
+
+
+@pytest.mark.parametrize("teams_path", [SERVER_TEAMS, LAPTOP_TEAMS], ids=["server", "laptop"])
+def test_every_model_a_demo_page_offers_has_somewhere_to_go(teams_path):
+    """A model with no route through its team's chain would be a dropdown entry that 400s."""
+    teams_config = config_module.load_teams_config(str(teams_path))
+    catalog = config_module.load_model_catalog(str(MODEL_CATALOG))
+
+    published = public_demo_teams(teams_config, catalog)
+
+    assert published
+    for team in published:
+        for model in team["models"]:
+            assert model["routes"], f'{team["team_id"]} offers {model["name"]} with no route'
+
+
+def test_the_laptop_demo_is_the_server_demo_plus_ollama():
+    """Same page, same server teams; the laptop adds teams and an Ollama outage button."""
+    server = config_module.load_teams_config(str(SERVER_TEAMS))
+    laptop = config_module.load_teams_config(str(LAPTOP_TEAMS))
+    switches = dict.fromkeys(["groq", "ollama"])
+
+    server_public = {key: team for key, team in server.items() if team["public_demo"]}
+
+    assert server_public
+    assert {key: laptop.get(key) for key in server_public} == server_public
+    assert demo_provider_names(server, switches) == ["groq"]
+    assert demo_provider_names(laptop, switches) == ["groq", "ollama"]
+    assert [team["team_id"] for team in public_demo_teams(laptop)] == [
+        "demo-public",
+        "demo-policy",
+        "demo-chain",
+        "demo-ollama",
+        "team-alpha",
+        "team-beta",
+    ]

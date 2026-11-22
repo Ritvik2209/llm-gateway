@@ -9,7 +9,7 @@ a model.
 |---|---|
 | Gateway overhead | **1.67 ms** mean (target: <10 ms) |
 | Throughput ceiling | **~450 req/s** single process |
-| Tests | 213, offline, no credentials |
+| Tests | 216, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
 | Application code | 2,624 lines across 21 modules |
 
@@ -500,8 +500,11 @@ acceptable there: the outage expires on its own and cannot be extended while run
 switched-off provider is never called (so the demo spends no quota failing), only providers
 that a published demo team actually uses can be switched off (never mock, the last resort
 every chain ends on), and the switch exists only on an instance with no real tenants. The demo teams' keys are public by design;
-their rate limits and budget caps are what protect the Groq key. Setup is in
-[DEPLOYMENT.md](DEPLOYMENT.md).
+their rate limits and budget caps are what protect the Groq key. The server runs Groq and mock
+only, because a 2 GB machine cannot run Ollama, so its fallback answer is the canned mock reply.
+The same page with all three providers, where a Groq outage falls back to a real local model,
+runs from `docker-compose.demo.yml` on a machine that has Ollama. Each keeps its own Prometheus
+and Grafana. Setup is in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## 11. Limitations and deliberate deferrals
 
@@ -653,6 +656,6 @@ Counts of tests, metrics, panels, rules and endpoints were taken from the source
 from memory. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
-Scope as documented: 213 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
+Scope as documented: 216 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
 3 inhibitions, 11 endpoints, 3 providers serving 4 models, 4 model tiers, 4 teams, and
 roughly 2,800 lines of application code against 3,100 lines of tests across 37 commits.
