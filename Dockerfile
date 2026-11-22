@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+# Pinned to the Python release and Debian base the image was tested on; see docker-compose.yml.
+FROM python:3.12.16-slim-trixie
 
 WORKDIR /app
 

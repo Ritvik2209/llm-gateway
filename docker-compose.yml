@@ -1,6 +1,10 @@
+# Every image is pinned to an exact version, for the reason requirements.txt is: an unpinned
+# image pulls whatever is newest on each build, so the server could run versions nothing was
+# tested on. The alert links, for one, need Prometheus 3. Upgrade by changing a tag here and
+# checking the stack.
 services:
   redis:
-    image: redis:latest
+    image: redis:8.10.3
     container_name: gateway-redis
     ports:
       - "6379:6379"
@@ -8,7 +12,7 @@ services:
       - gateway-net
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v3.13.1
     container_name: gateway-prometheus
     ports:
       - "9090:9090"
@@ -22,7 +26,7 @@ services:
       - gateway-net
 
   alertmanager:
-    image: prom/alertmanager
+    image: prom/alertmanager:v0.34.1
     container_name: gateway-alertmanager
     ports:
       - "9093:9093"
@@ -39,7 +43,7 @@ services:
       - gateway-net
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:13.1.0
     container_name: gateway-grafana
     ports:
       - "3000:3000"

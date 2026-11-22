@@ -439,10 +439,11 @@ These were found by testing the running system, and are documented rather than p
 ## Tech Stack
 
 - **Python 3.12** — FastAPI, Pydantic, httpx, uvicorn
-- **Redis** — rate-limit windows and budget accounting
-- **Prometheus** — metrics collection
-- **Grafana** — dashboards, provisioned as code
-- **Docker / Docker Compose** — local orchestration
+- **Redis 8** — rate-limit windows and budget accounting
+- **Prometheus 3 and Alertmanager** — metrics collection, alert rules, Slack delivery
+- **Grafana 13** — dashboards, provisioned as code
+- **Docker / Docker Compose** — local orchestration; every image pinned to an exact release
+- **Caddy** — HTTPS for the public demo server
 - **pytest** — unit and integration tests (pytest-asyncio, fakeredis)
 
 ## Development Notes
