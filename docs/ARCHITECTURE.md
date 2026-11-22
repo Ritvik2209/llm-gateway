@@ -9,7 +9,7 @@ a model.
 |---|---|
 | Gateway overhead | **1.67 ms** mean (target: <10 ms) |
 | Throughput ceiling | **~450 req/s** single process |
-| Tests | 218, offline, no credentials |
+| Tests | 220, offline, no credentials |
 | Metrics / panels / alert rules | 14 / 29 / 8 |
 | Application code | 3,746 lines of Python across 24 files; tests 4,859 |
 
@@ -658,7 +658,7 @@ under `app/` and `tests/`, blank lines and comments included; the demo page's HT
 counted. The 240 ms queueing figure was read from Prometheus at concurrency 100 and
 cross-checked against Little's Law.
 
-Scope as documented: 218 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
+Scope as documented: 220 tests, 14 metrics, 29 panels across 4 dashboards, 8 alert rules,
 3 inhibitions, 11 endpoints plus 4 that exist only in demo mode, 3 providers serving 4 models,
 5 model tiers, 4 teams in the default config (7 in the laptop demo), and 3,746 lines of
 application code against 4,859 lines of tests.
